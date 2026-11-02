@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "startup": "application",
   "boot": "auto",
-  "arch": ["aarch64", "amd64"],
+  "arch": ["amd64"],
   "ingress_port": 8090,
   "panel": true,
   "panel_title": "outl",
@@ -27,5 +27,5 @@
   },
   "privileged": [],
   "hassio_api": false,
-  "image": "ghcr.io/<user>/outl-homeassistant-addon:{arch}"
+  "image": "ghcr.io/frigidplatypus/outl-homeassistant-addon:{arch}"
 }
