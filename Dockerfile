@@ -65,30 +65,30 @@ COPY --from=builder /out/outl /usr/local/bin/outl
 COPY frontend/dist /app/static
 COPY docker/entrypoint.sh /usr/local/bin/outl-entrypoint
 
+# The `data` mapping mounts the addon's persistent data folder at /data.
+# Everything that must survive a container rebuild lives under it:
+#   /data/workspace  the outl workspace (the replicated notes)
+#   /data/home       this device's identity + actor bindings
+#
 # $HOME locates the iroh identity (~/.outl/identity.key, which IS this
 # device's node id); $XDG_CONFIG_HOME locates the device store
-# (~/.config/outl, which owns the actor bindings). Both must outlive the
-# container — see the VOLUME below.
+# (~/.config/outl, which owns the actor bindings). iroh only syncs the
+# workspace subtree, so the identity under /data/home is never replicated.
 #
 # Deliberately NOT $OUTL_DEVICE_DIR: that means "throwaway actor" and would
 # rotate the node id, breaking every pairing.
-ENV HOME=/home/outl \
-    XDG_CONFIG_HOME=/home/outl/.config \
-    OUTL_WORKSPACE=/data \
+ENV HOME=/data/home \
+    XDG_CONFIG_HOME=/data/home/.config \
+    OUTL_WORKSPACE=/data/workspace \
     OUTL_PORT=8090 \
     OUTL_STATIC_DIR=/app/static \
     RUST_LOG=info
 
-RUN mkdir -p /data /home/outl/.outl /home/outl/.config/outl \
- && chown -R outl:outl /data /home/outl
-
-# Two volumes, two for a reason: /data is replicated to every peer (the
-# notes); /home/outl is what makes this container one device rather than a
-# new one on every restart (the identity + actor bindings).
-VOLUME ["/data", "/home/outl"]
+RUN mkdir -p /data/workspace /data/home/.outl /data/home/.config/outl \
+ && chown -R outl:outl /data
 
 USER outl
-WORKDIR /data
+WORKDIR /data/workspace
 STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["/usr/local/bin/outl-entrypoint"]

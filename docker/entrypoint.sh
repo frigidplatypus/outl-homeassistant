@@ -1,15 +1,15 @@
 #!/bin/sh
 # outl addon entrypoint.
 #
-# Ensures the workspace volume is initialized (an empty /data becomes a fresh
-# workspace) and then execs the requested command (default: outl-server).
+# Ensures the workspace is initialized (an empty workspace dir becomes a
+# fresh workspace) and then execs the requested command (default: outl-server).
 #
 # The workspace is the shared volume. If it is empty on first start, scaffold
 # it so the server has something to open; an existing workspace is left
 # untouched.
 set -eu
 
-WS="${OUTL_WORKSPACE:-/data}"
+WS="${OUTL_WORKSPACE:-/data/workspace}"
 
 # Scaffold an empty workspace once. `outl init` is idempotent-safe: it only
 # writes the ops/, journals/, pages/ scaffolding when absent.

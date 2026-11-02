@@ -6,26 +6,23 @@
   "startup": "application",
   "boot": "auto",
   "arch": ["amd64"],
+  "ingress": true,
   "ingress_port": 8090,
-  "panel": true,
   "panel_title": "outl",
   "panel_icon": "mdi:note-text",
   "panel_admin": true,
   "options": {
-    "workspace": "/data"
+    "workspace": "/data/workspace"
   },
   "schema": {
     "workspace": "str"
   },
-  "map": [
-    "/data",
-    "/home/outl"
-  ],
+  "map": ["data"],
   "environment": {
     "OUTL_WORKSPACE": "${workspace}",
     "OUTL_PORT": "8090"
   },
   "privileged": [],
   "hassio_api": false,
-  "image": "ghcr.io/frigidplatypus/outl-homeassistant-addon:{arch}"
+  "image": "ghcr.io/frigidplatypus/outl-homeassistant-addon-{arch}"
 }

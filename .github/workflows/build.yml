@@ -33,15 +33,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/outl-homeassistant-addon
-          tags: |
-            type=raw,value=amd64
-            type=raw,value=latest
-            type=sha
+      # The supervisor pulls `<image>:<version>` where image is the
+      # config.json `image` field with `{arch}` substituted and version is the
+      # config.json `version`. Tag accordingly so the store can find it.
+      - name: Read addon version
+        id: ver
+        run: |
+          v=$(node -e "console.log(require('./config.json').version)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -49,7 +48,8 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/outl-homeassistant-addon-amd64:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/outl-homeassistant-addon-amd64:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
