@@ -61,14 +61,15 @@ part; the BuildKit cache mounts make rebuilds incremental.
 docker run -d --name outl \
   -p 8090:8090 \
   -v outl-data:/data \
-  -v outl-state:/home/outl \
   outl-ha-addon
 ```
 
-Open `http://localhost:8090/`. The two volumes are deliberate: `/data` is the
-replicated notes; `/home/outl` is this device's identity (the iroh key +
-actor bindings). Lose `/home/outl` and the container comes back as a *new*
-device — unpaired, writing under a fresh actor.
+Open `http://localhost:8090/`. One volume, `/data`, holds everything that must
+survive a rebuild: `/data/workspace` is the replicated notes and `/data/home`
+is this device's identity (the iroh key + actor bindings). iroh only syncs the
+workspace subtree, so the identity is never replicated. Lose `/data/home` and
+the container comes back as a *new* device — unpaired, writing under a fresh
+actor.
 
 ## Install as a Home Assistant addon
 
@@ -137,7 +138,7 @@ not the intended path.
 
 | Variable          | Default      | Meaning                                   |
 |-------------------|--------------|-------------------------------------------|
-| `OUTL_WORKSPACE`  | `/data`      | Workspace root (the shared volume)        |
+| `OUTL_WORKSPACE`  | `/data/workspace` | Workspace root (under the data volume) |
 | `OUTL_PORT`       | `8090`       | HTTP port                                 |
 | `OUTL_STATIC_DIR` | `/app/static`| Built frontend                            |
 | `RUST_LOG`        | `info`       | Log filter (`outl=debug` to diagnose sync)|
