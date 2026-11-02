@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- mDNS peer discovery on the LAN (issue #149). Without this the Wi-Fi
+         driver keeps filtering multicast frames and discovery silently finds
+         nobody — see OutlMulticast.kt. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- AndroidTV support -->
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <application
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.outl_mobile"
+        android:usesCleartextTraffic="${usesCleartextTraffic}">
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:launchMode="singleTask"
+            android:label="@string/main_activity_title"
+            android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!-- AndroidTV support -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <!-- `outl://` deep links, parsed by `outl_actions::deeplink`
+                 (RFC 0363). The capture widget and the quick settings
+                 tile both open `outl://capture`, so without this filter
+                 they open nothing — which is why it lands with them.
+                 iOS registers the same scheme in its Info.plist
+                 (`CFBundleURLSchemes`), and the desktop in
+                 `tauri.conf.json`'s `deep-link.desktop.schemes`. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="outl" />
+            </intent-filter>
+        </activity>
+
+        <!-- Shown instead of crashing when liboutl_mobile_lib.so will not
+             load on this device. A plain activity that never touches the
+             library; see OutlNativeLibrary.kt. -->
+        <activity
+            android:name=".NativeLoadErrorActivity"
+            android:label="@string/app_name"
+            android:exported="false" />
+
+        <!-- Share target: text or a link shared to outl becomes one line
+             in the capture inbox (RFC 0363). Invisible — translucent, no
+             history, out of recents — so the user stays in the app they
+             shared from. `exported` because the share sheet is the whole
+             point. -->
+        <activity
+            android:name=".OutlShareActivity"
+            android:label="@string/capture_title"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Home screen widget: one tap opens `outl://capture`. Writes
+             nothing, so it needs no inbox and no permissions. -->
+        <receiver
+            android:name=".OutlCaptureWidget"
+            android:label="@string/capture_title"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/outl_capture_widget_info" />
+        </receiver>
+
+        <!-- Quick settings tile: the Android shape of iOS's Lock Screen
+             widget. Also just opens `outl://capture`. -->
+        <service
+            android:name=".OutlCaptureTile"
+            android:label="@string/capture_title"
+            android:icon="@drawable/ic_outl_capture"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <provider
+          android:name="androidx.core.content.FileProvider"
+          android:authorities="${applicationId}.fileprovider"
+          android:exported="false"
+          android:grantUriPermissions="true">
+          <meta-data
+            android:name="android.support.FILE_PROVIDER_PATHS"
+            android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

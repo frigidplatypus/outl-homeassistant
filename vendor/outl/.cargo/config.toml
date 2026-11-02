@@ -1,0 +1,76 @@
+[env]
+# Keep every cargo-spawned process (tests, `cargo run`) off the developer's
+# real device store at `~/.config/outl/`.
+#
+# The per-device actor id now lives outside the workspace
+# (`outl_core::device`), and the CLI/TUI test suites open hundreds of temp
+# workspaces. Without this override each one would leave a file in the
+# developer's config directory, and two test binaries would share the machine
+# id that arbitrates actor-claim migration.
+#
+# `outl_sync_iroh::default_device_dir` honours it too, under an `iroh/` subdir.
+# Its two files are worse to share than an actor binding: the identity key IS
+# this device's node id, and the endpoint lease is what decides which process
+# binds it — so a suite on the real `~/.outl` would mint keys in the
+# developer's home and arbitrate against their running desktop app.
+#
+# An installed `outl` binary is unaffected — cargo only exports this to
+# processes it launches itself.
+#
+# NOT under `target/`, and that is the whole point of this line.
+#
+# It was, and `cargo clean` deletes `target/` — including the iroh identity key,
+# which IS this device's node id. So every clean turned a `cargo run` desktop
+# into a brand-new device, and every device already paired with it started
+# refusing the connection: `peer refused: this device is not paired with it`,
+# because pairing is bidirectional and the peer still lists an id that no longer
+# exists. This repo cleans often (the file-size and disk hooks do it
+# automatically), so it happened three times in one day — three node ids,
+# three broken pairings, and a log that reads like a transport bug.
+#
+# `.dev-device-store/` is gitignored and survives a clean, so a source build
+# stays the same device across rebuilds.
+#
+# The trade: nothing prunes it any more. The suite opens a temp workspace per
+# test and each leaves an actor binding, so `actors/` grows without bound (one
+# session: 935 records, all pointing at TempDir paths that no longer exist).
+# `scripts/gc-dev-device-store.sh` drops the orphaned ones. It only ever
+# touches `actors/` — a binding is regenerated on the next open, while
+# `iroh/identity.key` IS the node id and deleting it is the failure this whole
+# move exists to prevent.
+#
+# This is still NOT the machine's real identity: run with `OUTL_DEVICE_DIR=`
+# for that, or pair the phone against this one once and it stays paired. See
+# `outl_sync_iroh::default_device_dir`, whose own docs asked for a persistent
+# path while this file pointed at the one directory guaranteed to be erased.
+OUTL_DEVICE_DIR = { value = ".dev-device-store", relative = true }
+
+# Link the Android `.so` for 16 KB memory pages.
+#
+# Devices that page at 16 KB are already in the field: the Pixel 8 and 9
+# families expose it as a developer option, newer hardware ships with it on,
+# and since November 2025 Google Play requires support from every app update
+# targeting Android 15+. On one of those, `dlopen` refuses a library whose
+# LOAD segments are aligned to 4 KB, and the app dies on its very first
+# `System.loadLibrary`, which is
+# `NativeSetup`'s initializer in `MainActivity.onCreate` — so the symptom is
+# "crashes on open", with nothing of ours having run yet.
+#
+# Nothing in the toolchain does this for us. Measured on the beta.226 APK:
+# the two vendored AAR libraries carried `p_align 0x4000` and ours carried
+# `0x1000`. The NDK does set `max-page-size` for 64-bit targets, but it sets
+# it in its CMake and ndk-build toolchain files, and cargo uses neither — it
+# drives the NDK's `clang` as a bare linker. rustc 1.95 does not pass it
+# either.
+#
+# 32-bit targets are left out on purpose: 16 KB pages are a 64-bit change.
+#
+# An exported `RUSTFLAGS` REPLACES this rather than merging with it, so a
+# workflow that sets one has to carry the flag itself. `release.yml`'s
+# `build_android` sets none, and `android-apk-page-alignment.py` fails the
+# build if this ever stops taking effect.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

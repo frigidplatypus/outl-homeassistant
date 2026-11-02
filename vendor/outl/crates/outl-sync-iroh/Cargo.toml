@@ -1,0 +1,78 @@
+[package]
+name = "outl-sync-iroh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "iroh-based P2P sync transport for outl"
+license.workspace = true
+publish = false
+
+[dependencies]
+outl-actions = { workspace = true }
+# `[sync] transport` + `[sync] relay_url` are read by `build_transport`, the one
+# owner of "may this process bind an endpoint, and with what". Every client used
+# to read them itself and pass the result in — three copies of the same recipe.
+outl-config = { workspace = true }
+outl-core = { workspace = true }
+# `outl_md::asset::hash_bytes` re-computes an asset's sha-256 to verify the
+# pulled bytes match the content-addressed filename (defense in depth against a
+# corrupt/malicious peer). Reusing the canonical hasher keeps the naming rule in
+# one place. See `crate::engine_assets`.
+outl-md = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+# Resolve `~/.outl/peers.json` for the one-time per-workspace peers migration.
+dirs = { workspace = true }
+tokio = { version = "1", features = ["full"] }
+# See workspace Cargo.toml for why iroh keeps default-features ON.
+iroh = { workspace = true }
+iroh-gossip = { workspace = true }
+# mDNS address lookup for same-LAN peers (issue #149).
+iroh-mdns-address-lookup = { workspace = true }
+# `StreamExt` for the gossip receiver stream lives in `n0-future`, re-exported
+# by iroh-gossip's public API surface.
+n0-future = "0.3"
+# `ReceiverStream` adapts the Bonjour resolve channel into the `BoxStream`
+# iroh's `AddressLookup::resolve` returns. Same adapter
+# `iroh-mdns-address-lookup` uses for the same job.
+tokio-stream = "0.1"
+# The DNS-SD instance label. `EndpointId`'s `Display` is hex (64 chars), which
+# is 1 byte over the 63-byte cap on a DNS label, so the label has to be encoded
+# the way `iroh-mdns-address-lookup` encodes it. See `lan::instance_label`.
+data-encoding = "2"
+blake3 = "1"
+# CSPRNG for the pairing-ticket secret (issue #159). Already in the tree as an
+# iroh dependency; named here because this crate uses it directly.
+rand = "0.10"
+# `chrono` + `qrcode` back the pairing helpers (ISO timestamps in PeerEntry,
+# QR ticket rendering) called out in the crate's CLAUDE.md. Kept so the
+# pairing CLI path can land without a manifest change.
+chrono = { version = "0.4", features = ["serde"] }
+qrcode = "0.14"
+# `base64` encodes the pairing ticket (an `EndpointAddr` serialized to JSON);
+# `bytes` is the payload type `GossipSender::broadcast` takes.
+base64 = "0.23"
+bytes = "1"
+# `if-addrs` enumerates the local machine's interfaces (ip + netmask) so a dial
+# can drop a peer's stored direct addrs that are NOT on any local subnet — stale
+# VPN / tunnel IPs captured at pairing time that would otherwise stall iroh's
+# multipath (`MultipathNotNegotiated`). See `PeerEntry::iroh_endpoint_addr`.
+if-addrs = "0.15"
+# Advisory file locks (peers.json + op-log append). Uses `flock(2)` via libc
+# directly, unlike `std::fs::File::lock()`, which is hardcoded to return
+# `Unsupported` on Android (target_os = "android" is absent from its cfg gate),
+# breaking pairing on-device. Same crate `outl-core` already locks with.
+fs2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+# The two structural guards in `bind.rs` walk `src/` recursively. A flat
+# `read_dir` skipped every file under `protocol/` and `test_support/` — the
+# module declaring the ALPNs and frames included — and skipped it silently:
+# both guards still found files, so neither failed. Same walk the rest of the
+# workspace uses (`outl_actions::backup::repo`, `doctor::oplog::jsonl_files`).
+walkdir = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+outl-core = { workspace = true }

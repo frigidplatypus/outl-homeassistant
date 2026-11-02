@@ -1,0 +1,996 @@
+# Markdown Format
+
+The outl markdown dialect, the sidecar `.outl` format, and the 3-level matching algorithm that bridges them.
+
+## Why this matters
+
+The user sees the `.md`.
+The op log uses stable IDs.
+We need both, without visible metadata in the file.
+Every design decision here serves that.
+
+> **Why the dialect looks like this, and what it costs to add a token to it:** [RFC 0008](rfcs/0008-markdown-dialect-and-sidecar-tokens.md).
+
+---
+
+## The .md file
+
+```markdown
+title:: meu projeto x
+type:: project
+status:: active
+tags:: #produto #2026-q2
+created:: [[2026-05-24]]
+
+- objetivo principal #okr
+  priority:: high
+  owner:: [[avelino]]
+  - métrica: 30% redução de custo
+  - prazo: [[2026-06-30]]
+- riscos
+  - dependência de [[fornecedor y]] #risco
+```
+
+That is the **entire file**.
+No IDs, no UUIDs, no HTML comments, no frontmatter delimiter.
+What you see is what's on disk.
+
+### Page properties (top of file)
+
+Lines at the start of the file in the form `key:: value` are page-level properties.
+Parsing stops at the first blank line or first `-` outline item.
+
+```
+title:: my page
+type:: project
+status:: active
+
+- first block...
+```
+
+A value that is empty or only whitespace is not written.
+`render` skips it, on a page and on a block, so a bare `key::` does not stay in the file.
+The parser still accepts that line and stores `""`.
+`outl page prop set key=` and `outl page prop delete` both append `Op::SetProp` with no value, so a blank set removes the key.
+An older log may still hold an empty string; the projection omits that line.
+
+The `type::` key carries the page's semantic kind and is consumed by surfaces that filter pages by role — `type:: person` is the canonical example, recognised by the `@` mention autocomplete (see [§Mentions](#mentions-name)).
+Other types (`type:: project`, `type:: meeting`, …) are free-form today; the autocomplete only filters on `person`.
+
+### Outline items
+
+Standard markdown unordered lists:
+
+```
+- top level block
+  - child block
+    - grandchild block
+- another top level
+```
+
+Indent is **two spaces** per level.
+Tab is normalized to two spaces on parse and rendered as two spaces.
+
+### Multi-line block text (continuation lines)
+
+A bullet's text can span multiple lines.
+Subsequent lines are indented **one level deeper** than the bullet and contain no marker of their own:
+
+```
+- first line of the block
+  second line of the same block
+  third line
+```
+
+Parsed as a single block with `text = "first line of the block\nsecond line of the same block\nthird line"`.
+Renders back identically.
+
+**A blank line inside the text is not a separator — if it carries the indent.**
+While continuation is still open, a blank line indented one level deeper than the bullet stays part of the block's own text (a blank line the user typed inside a multi-paragraph block).
+
+The indent is what distinguishes the two cases, and it is invisible in a code fence, so `·` stands for a space below:
+
+```
+-·briefing
+··paragraph·one
+··
+··paragraph·two
+-·next·block
+```
+
+Parses to one block with `text = "briefing\nparagraph one\n\nparagraph two"`, and `next block` as its sibling.
+
+**A genuinely empty line (no indent at all) ends continuation**, and that is not a detail — it is the whole rule:
+
+```
+-·briefing
+··paragraph·one
+
+··paragraph·two
+-·next·block
+```
+
+Here the empty line closes the block, and `paragraph two` is recovered as a child block with a warning rather than folded into the text above it.
+Nothing is lost either way; what changes is where the line lands.
+
+This is what the renderer emits, so the round-trip holds by construction: `render` writes every line of `text` after the first at `indent + 1`, and an empty line in the text becomes an indented blank one.
+
+**A continuation line's own indentation survives.**
+The renderer writes each continuation line one level deeper than the bullet.
+A line whose own text is itself indented (`"head\n  detail"`) comes back one level deeper still on parse, and only that extra level is stripped — so nested indentation inside a block's text round-trips verbatim instead of flattening.
+
+Continuation **ends** at the first line that is a block marker (`-`), a property (`key:: value`), a genuinely empty line, or once a child block has claimed the slot after one.
+After that, a line the grammar still can't place — over-indented, no open continuation to absorb it — is recovered as a **child block** at the depth it was written (see "Permissive parsing & warnings" below).
+Nothing is silently skipped, at any depth.
+
+In the TUI: `Alt+Enter` (or `Ctrl+J`, or `Shift+Enter` in kitty-protocol-aware terminals) inserts a soft newline inside the current block.
+Plain `Enter` commits and creates a sibling — unless the cursor is inside an open fenced code block, in which case `Enter` auto-detects and inserts a soft newline instead (see below).
+
+### Block-level prefixes (TODO / DOING / DONE / quote)
+
+A block's *kind* (open task, task in progress, completed task, blockquote) is encoded as a **text prefix** on the bullet's body, not as a separate AST field.
+This keeps the wire format stable, round-trips through any CommonMark renderer, and lets a user drop the marker by erasing the prefix in their editor.
+
+| Prefix | Meaning | Helpers |
+|---|---|---|
+| `TODO ` | Open task | `outl_actions::todo::TODO_PREFIX` / `split_todo` / `cycle_todo` |
+| `DOING ` | Task somebody has started | `outl_actions::todo::DOING_PREFIX` / `split_todo` / `cycle_todo` |
+| `DONE ` | Completed task | `outl_actions::todo::DONE_PREFIX` / `split_todo` / `cycle_todo` |
+| `> ` | Blockquote (CommonMark-compatible) | `outl_actions::quote::QUOTE_PREFIX` / `split_quote` / `toggle_quote` |
+
+```markdown
+- TODO write the RFC
+- DOING ship the parser
+- DONE read the paper
+```
+
+The toggle chord (`Ctrl+T` in the TUI, `⌘T` on desktop) walks one stop per press: `(none) → TODO → DOING → DONE → (none)`.
+
+**The CommonMark checkbox is a second spelling of the same three states**, accepted on read ([issue #230](https://github.com/outlmd/outl/issues/230)):
+
+| You type | outl reads it as |
+|---|---|
+| `- [ ] buy milk` | `TODO` |
+| `- [/] buy milk` | `DOING` |
+| `- [x] buy milk` / `- [X] buy milk` | `DONE` |
+
+A block written that way is a task everywhere a `TODO ` block is one: it draws a checkbox, answers `status:` queries, counts in the progress chip, and toggles.
+
+Two things to know about it:
+
+- **Only the word form is ever written back.**
+  The first toggle rewrites `[ ] buy milk` into `DOING buy milk`, and it does not return to bracket form.
+  Until you act on the block, the bytes on disk stay exactly as typed — recognition alone never edits the file.
+- **The trailing space is what separates a checkbox from a link.**
+  `[x](https://example.com)` is a markdown link whose anchor text is `x`, and it stays a link.
+  `[]`, `[ ]` alone, and `[y] foo` are prose.
+
+Rules:
+
+- One space follows the marker.
+  `>foo` (no space) is **not** a quote — same CommonMark rule that decides `>foo` is a literal paragraph and `> foo` is a blockquote.
+  The same rule makes `DOINGs are piling up` prose, not a started task.
+- **`DOING ` is one character wider than the other two.**
+  Anything doing cursor math around the marker must measure the prefix it is adding or removing (`TodoState::prefix`), never assume five.
+- Progress counters (the TUI's `●● 3/7` chip) count `DOING` toward the **total**, never toward the done half — a started task is unfinished work.
+- Markers compose in a **canonical order**: `"TODO > body"` / `"DONE > body"` (TODO/DONE before the quote marker).
+  `toggle_quote` and `cycle_todo` peel both prefixes off and re-emit in canonical order, so a user who authors them in the other order (`"> TODO foo"`) gets normalised on the next toggle.
+  Why canonical order matters: the backend's `split_todo` reads from the **start** of the text.
+  A `"> TODO foo"` would surface in the `OutlineNode` DTO as `todo = null` and the literal `"> TODO foo"` in `text` — checkbox disappears mid-flight on mobile / desktop.
+  The TUI's `split_block_prefixes` still accepts either order for *display* (so externally authored `.md` reads correctly), but every mutation in `outl-actions` emits the canonical form.
+- Children of a quoted block are **not** implicitly quoted — the marker lives on the block, not on its subtree.
+  Same policy as TODO/DONE.
+- Multi-line quote bodies keep the `> ` on every continuation line so the file stays a valid CommonMark blockquote when an external tool opens it.
+
+Single-line:
+
+```
+- > the only way to do great work is to love what you do
+- regular block
+```
+
+Multi-line:
+
+```
+- > quote line one
+  > quote line two
+  > quote line three
+- next regular block
+```
+
+Inline tokens (`**bold**`, `[[ref]]`, `#tag`, `((blk-…))`) tokenize **inside** the quoted body — the wrapper is transparent to the inline tokenizer.
+
+### Fenced code blocks inside a bullet
+
+CommonMark code fences are preserved literally:
+
+```
+- intro paragraph
+  ```lisp
+  (+ 1 2)
+  ```
+- next bullet
+```
+
+The opening ` ``` ` may live on the bullet line itself (`` - ```lisp ``) — parser, renderer, and the [`outl-exec`] engine all handle that shape correctly.
+
+What makes fences different from regular continuation:
+
+- Content between the opener and closer is preserved **verbatim**.
+  No `-`, no `key::`, no inline syntax recognition.
+- The closer is a line whose trimmed content is exactly `` ``` `` (with optional trailing backticks) at the same indent as the opener.
+- A missing closer is gracefully synthesized at EOF so the rendered output stays well-formed; the parser also breaks out of a fence when a sibling bullet outdents below the fence indent — better than swallowing the rest of the document.
+
+[`outl-exec`]: ../crates/outl-exec/
+
+#### Language tag aliases
+
+The opening fence's info-string (`` ```rs `` / `` ```javascript `` / `` ```py3 ``) gets canonicalised through a single shared alias table — [`outl_md::lang::canonical`] in Rust, [`@outl/shared/highlight::canonical`] in TypeScript.
+Both layers use the same canonical names so what runs at the backend, what gets syntax-highlighted in the desktop / mobile editor, and what the user types in the fence all line up.
+
+A handful of the common aliases:
+
+| You write | Resolves to | Notes |
+|---|---|---|
+| `js`, `javascript`, `node`, `nodejs` | `js` | Maps to the `js` runtime in `outl-exec`. Before the alias table, `` ```javascript `` failed with "no runtime registered". |
+| `rs`, `rust` | `rust` | |
+| `py`, `python`, `python3` | `python` | |
+| `sh`, `bash`, `zsh` | `shell` | Highlight only — no runtime yet. |
+| `yml` | `yaml` | |
+| `md` | `markdown` | |
+| `c++`, `cxx`, `cc`, `cpp` | `cpp` | |
+| `cs`, `c#` | `csharp` | |
+| `query`, `tasks` | `query` | Maps to the `query` runtime — workspace queries as code blocks (see [Query code blocks](#query-code-blocks) below). |
+
+The full table lives in `crates/outl-md/src/lang.rs::KNOWN_ALIASES`; the TS mirror is `crates/outl-frontend-shared/src/highlight/aliases.ts`.
+Add a row in both files in the same commit — the `doc-sync-guard` hook treats this as a shortcut-level change and refuses the edit otherwise.
+
+#### Syntax highlighting (desktop + mobile)
+
+`outl-desktop` and `outl-mobile` both render code fences in read mode through the shared `<HighlightedCode />` component.
+It lazy-loads [`highlight.js`'s "common" bundle][hljs-common] (~30 popular languages, ~80 KB) and applies the brand palette defined in `crates/outl-frontend-shared/src/highlight/styles.css`.
+
+Unknown / empty languages fall back to a plain `<pre>` with the brand-dark canvas — we never use highlight.js's `"auto"` detection because the misclassification cost (Bash highlighted as Perl) is worse than visual flatness.
+
+The TUI renders fences as monospace text without syntax colouring today; the planned approach when this lands is `syntect` keyed on the same canonical names from `outl_md::lang`.
+
+[`outl_md::lang::canonical`]: ../crates/outl-md/src/lang.rs
+[`@outl/shared/highlight::canonical`]: ../crates/outl-frontend-shared/src/highlight/aliases.ts
+[hljs-common]: https://github.com/highlightjs/highlight.js/blob/main/src/index.js
+
+#### Query code blocks
+
+A ` ```query ` fence runs a declarative DSL against the workspace and renders matching blocks as **live embed references**.
+Query blocks auto-run on every page load — no `gx` or `auto-run::` needed.
+
+Full syntax reference, examples, and architecture: [Query code blocks](query.md).
+
+### Tables
+
+A pipe-delimited table is **one block**, whose text carries the rows.
+Same shape as a fenced code block and a `> ` quote: the dialect stays one-block-per-bullet and the op log never learns a new kind.
+
+On disk, written as a bullet with continuation lines:
+
+```
+- | Route   | Pax | Owner      |
+  | ------- | --: | :--------- |
+  | SP → RJ | 1203 | [[avelino]] |
+  | BH      |   12 |             |
+```
+
+Written (or pasted) **without** a bullet, the parser claims the rows as one block and raises **no warning** — a table is understood, not recovered:
+
+```
+| Route | Pax |
+| --- | --: |
+| SP    | 1203 |
+```
+
+The next save normalises it to the bulleted form above.
+That is the only change it makes: outl **never reformats the columns** of a table you wrote.
+Alignment is a render decision (the TUI pads when it paints, the GUI clients hand the cells to `<table>`), so a hand-written table keeps its bytes and produces no `Op::Edit` churn.
+
+What counts as a table:
+
+- A row carrying an unescaped `|`, then a **delimiter row** (`| --- |`, `| :-- |`, `| :-: |`, `| --: |`), then every row after it.
+  Outer pipes are optional (`a | b` works).
+  Two lines is the minimum — a header with a rule under it and no body is a table you are still typing.
+- The delimiter row is what declares the intent.
+  Two pipe-carrying lines with no rule between them are prose, keep today's `unrecognized_block_marker` warning, and are not painted as a grid.
+- **A line another construct already owns is never a row**, whatever pipes it carries. A bullet (`- item | with a pipe`), a `key:: value` property (`status:: x | y`), and a fence opener all stay themselves — including in the **delimiter** position, so `- | -` is a bullet and not a rule.
+- `\|` is a literal pipe inside a cell. It splits nothing and renders as `|`.
+
+A cell carries ordinary inline markdown — `[[refs]]`, `#tags`, `**bold**`, `` `code` ``, `((blk-…))` — rendered exactly as it is anywhere else.
+The backend tokenizes each cell (`outl_md::tokenize_table`) and ships the result in `BlockNode.table`, so no client splits the pipes for itself.
+
+Two deliberate departures from GFM, both in the same direction:
+
+- **A surplus cell is kept.**
+  GFM truncates a row wider than its header; outl widens the table instead.
+  A cell you can see in your editor and not in outl is the loss this dialect exists to prevent.
+- **A short row is padded, not dropped.**
+
+Editing is editing the markdown.
+There is no add-row / add-column UI on any client, by design — see [issue #329](https://github.com/outlmd/outl/issues/329).
+Per-client rendering differences are recorded as `Capability::TableRendering` in [client parity](client-parity.md); pasting tabular data from a spreadsheet is in [Paste](paste.md).
+
+### Block properties
+
+A line in the form `key:: value` *as a child of an outline item* is a block property:
+
+```
+- objective
+  priority:: high
+  owner:: [[avelino]]
+  - this is a regular child block
+```
+
+`priority::` and `owner::` are properties of `objective`, not children.
+The third line (`- this is a regular child block`) is a real child.
+
+#### Property order
+
+outl writes properties **alphabetically by key**, on a page header and on a block, and reorders them on the next projection.
+So this, typed in this order:
+
+```
+- objective
+  owner:: [[avelino]]
+  due:: 2026-11-30
+  priority:: high
+```
+
+comes back as:
+
+```
+- objective
+  due:: 2026-11-30
+  owner:: [[avelino]]
+  priority:: high
+```
+
+The parser accepts any order and never loses a line — only the sequence moves, and only when outl rewrites the file.
+
+**Why outl does not keep the order you typed.**
+The op log is the source of truth (invariant 1) and `Op::SetProp` carries `(node, key, value)` with no position, so the order is simply not in it.
+The nearest thing available is each op's HLC, which is the order the properties were last *edited* — under that rule, a peer fixing one typo would reshuffle the whole block, on every device.
+Recording a real position means a new op field, and the CRDT requires `undo_op` to be its exact inverse while the previous order is not in the op (`outl-core`'s invariant 6).
+That is a permanent cost in the sync layer, paid for the order of formatting lines, so outl picks the one order that is stable everywhere instead.
+
+**What this means for you.**
+A hand-reordered file reads back fine and stays that way until outl next writes the page (an edit from any client, a peer's ops arriving, `outl serve`, `outl doctor --repair`).
+If your `.md` files are in git, it is worth running `outl doctor --repair` once after a bulk external edit so the reordering lands in one commit instead of leaking into the next hundred.
+
+One owner, in code: `outl_actions::tree::sort_in_presentation_order`.
+Every surface that shows properties calls it — the `.md` renderer, the outline DTO every GUI client reads, the outline parsed back from disk, a backlink row, the workspace index, the clipboard, `outl page prop list` and `outl block prop list` — so the order never depends on which one you are looking at.
+
+#### `remind::` — the one property the parser validates
+
+Every other `key:: value` is opaque to the parser. `remind::` is not: it carries a notification rule with its own grammar, so the parser checks it as it reads.
+
+```
+- TODO #fup [[@joão]] about project abc [[2026-12-12]]
+  remind:: 3pm every 1h until DONE
+```
+
+A rule the grammar can't read **never** costs you the property or the block — the line stays on disk verbatim, and the only consequence is that it doesn't schedule.
+The recovery is reported as a `ParseWarning` carrying the exact source line (`remind_missing_anchor`, `remind_invalid_time`, `remind_invalid_interval`, `remind_invalid_stop`, `remind_max_clamped`), so the parse banner and `outl doctor` can point at it.
+
+Full syntax, defaults, quiet hours, and which clients deliver: [Reminders](reminders.md).
+
+### Inline syntax
+
+| Syntax | Meaning |
+|--------|---------|
+| `[[name]]` | Reference to page named "name" |
+| `[[2026-05-24]]` | Reference to journal "2026-05-24" (rendered as date) |
+| `[[@name]]` | Mention — reference to the person page `name` (page-level `type:: person`); the `@` is the link affordance, not part of the page identity |
+| `#name` | Tag (page reference with classification semantics) |
+| `#a/b/c`, `[[a/b/c]]` | Nested tag / page — `a/b/c` lives in the `a/b` namespace, which lives in `a`. Any depth. See [Nested tags and page namespaces](#nested-tags-and-page-namespaces) |
+| `((blk-XXXXXX))` | Block reference — renders as the source block's text, links to it |
+| `!((blk-XXXXXX))` | Block embed — renders the source block expanded with its subtree |
+| `![alt](url)` | Image / embedded asset — renders inline (`<img>` on desktop/mobile, a `🖼`/`📄` placeholder in the TUI); `url` is a workspace-relative `assets/<hash>.<ext>` path or a remote URL. See [Asset links](#asset-links-nameassetshashext) |
+| `:shortcode:` | GitHub gemoji shortcode — renders as the unicode glyph (`:tada:` → 🎉) |
+| `{{query: ...}}` | Inline query token (legacy — parsed as opaque; use ` ```query ` code blocks instead, see [Query code blocks](#query-code-blocks) below) |
+| `**bold**`, `*italic*` / `_italic_`, `~~strike~~`, `` `code` `` | Standard CommonMark (underscore emphasis rules apply — see below) |
+| `==highlight==` | Highlight — renders the inner text marked (the on-disk form of Roam's `^^highlight^^` after import). The inner span may not begin or end with a space, so a spaced comparison (`a == b`) stays plain text |
+
+#### Underscore emphasis and intra-word identifiers
+
+`_italic_` works when the underscores are at word boundaries (surrounded by whitespace or punctuation).
+An underscore **inside** a word does not open or close emphasis — it is rendered literally.
+
+Examples that stay plain (no italic):
+
+```
+chamados_chat
+inc_lag1
+prod.ml_atendimento
+databricks_2_train
+```
+
+Use `*italic*` if you need emphasis inside or adjacent to a word-like token.
+`_italic_` in isolation (word-boundary underscores) still works.
+
+This follows the CommonMark spec and is enforced by `try_italic_under` / `try_bold_under` in `outl-md::inline` via the `closing_underscore` helper.
+
+#### Nested tags and page namespaces
+
+A `/` inside a tag or a page reference nests it, at any depth:
+
+```
+- installed on #os/linux/debian today
+- see [[programming-language/rust]] for the borrow checker notes
+```
+
+**On disk this changes nothing.**
+`os/linux` is one flat file, `pages/os-linux.md` — a slug is a single filesystem path component, so `/` folds to `-` ([concepts.md → Slugs](concepts.md#slugs)).
+The namespace lives in the page's `title::`, which keeps what you typed, verbatim.
+Two consequences: `[[os/linux]]` and a page named `os linux` are the same page, and renaming `os` does **not** rename its children.
+
+What the nesting buys you is on the parent page — it lists its descendants and collects their mentions.
+`#os` and `#os/linux` stay *different tags* either way.
+See [clients.md → Nested pages](clients.md#nested-pages-issue-275).
+
+#### Block refs and embeds
+
+`((blk-XXXXXX))` is an inline reference to another block.
+The handle is short, lowercase, and human-typeable — it's the last 6 Crockford base32 characters of the block's ULID, prefixed with `blk-`.
+Renderers resolve the handle through the workspace index and display the source block's text in place; the on-disk `.md` keeps the literal `((blk-XXXXXX))`.
+
+`!((blk-XXXXXX))` is the embed form.
+Same lookup, but the consumer expands the source block **and its subtree** inline.
+Mirrors the markdown image syntax (`![alt](url)` → "expand") so the `!` reads as the visual hint for inflation.
+
+```
+- decide which database to use #decision
+- in [[Project X]], see ((blk-r6s4a1)) for context
+- the whole thread: !((blk-r6s4a1))
+```
+
+Handles are persisted in the sidecar (see [§sidecar](#the-outl-sidecar)) so a future change to the derivation scheme cannot break references already living in `.md` files.
+An orphaned handle (citation points at a block that no longer exists) renders dimmed in the TUI and is flagged by `outl doctor`.
+
+Handle collisions are vanishingly unlikely — 6 lowercase base32 chars is ~30 bits, ~5×10⁻⁶ birthday probability at 100k blocks.
+When two blocks do land on the same base handle, the second block's handle is lazily expanded one character at a time (from the ULID's Crockford base32 tail) until unique within the workspace.
+Both the winner and the loser stay resolvable through their own (distinct) handles.
+The on-disk sidecar still records the deterministic 6-char handle — the divergence lives in memory until a future reconcile rewrites it.
+Workspaces that ever expanded a handle to 7+ characters keep working forever because lookup goes through the in-memory handle, not the literal sidecar field.
+
+#### Asset links (`[name](assets/<hash>.<ext>)`)
+
+> **Why asset bytes are content-addressed blobs and deliberately outside the op log:** [RFC 0202](rfcs/0202-file-assets.md).
+
+An uploaded file is copied into `<workspace>/assets/` under its content hash and referenced from a block.
+`outl asset add`, the MCP `outl_asset_add` tool, and the desktop/mobile "Attach file" action all do this.
+So does dropping a file onto an outline row (desktop, and mobile on iPad) or pasting a dropped file's path in the TUI's Insert mode — see [clients.md → Attach / drag-and-drop file import](clients.md#attach--drag-and-drop-file-import).
+
+The reference takes one of two forms, chosen by the file kind:
+
+```markdown
+- the diagram: ![diagram.png](assets/9a8b7c...d6e5.png)   ← image → embed form, renders inline
+- see the spec: [proposal.pdf](assets/1b2c3d...e4f5.pdf)   ← other file → plain link
+```
+
+- **Images** (`png`, `jpg`, `jpeg`, `gif`, `webp`, `svg`, `bmp`, `avif`, `ico`, `tiff`, `tif`) use the **embed form `![alt](url)`** and render **inline**.
+  Desktop and mobile show an `<img>`, the TUI shows a `🖼 alt` placeholder (a terminal can't paint pixels).
+- **Every other file** (PDF, anything) uses the **plain link `[name](url)`** and renders as a **file chip** (`📄 name`); activating it opens the file in the OS default app (TUI `g x`, desktop/mobile tap).
+
+The importers (`outl import roam|logseq|obsidian`) apply the same rule: an imported image lands as `![…]` and renders inline, while other imported files stay `[…]` links.
+The filename stem is the hex SHA-256 of the file's bytes, so re-uploading identical content reuses the same file and reference everywhere.
+A file over `[assets] max_bytes` in `config.toml` (default 100 MiB) is rejected before the copy; see [Configuration](config.md).
+
+Inline image rendering resolves the `assets/<hash>.<ext>` path against the workspace root on the client and loads the bytes through the backend (no external network fetch for a local asset); a remote `http(s)` image `url` is loaded directly.
+A `![…]` whose target is **not** an image extension (e.g. `![notes](assets/x.pdf)`) degrades to the same file chip as the plain-link form, so no reference is ever left unrendered.
+
+Asset bytes are **not** workspace state and never enter the op log — only the link text does, as an ordinary block edit.
+The file itself replicates like the `.md` projections: the file transport (iCloud/shared filesystem) carries it for free, and the iroh transport ships it over a dedicated `outl-asset/1` stream (see [Sync](sync.md)).
+
+#### Emoji shortcodes (`:tada:`)
+
+`:shortcode:` is the GitHub / Slack / Discord / Logseq convention.
+The catalog is GitHub gemoji (~1800 shortcodes), backed by the [`emojis`](https://crates.io/crates/emojis) crate.
+
+```
+- shipped the new build :tada: :rocket:
+- meeting moved to friday :calendar:
+- need to fix this :fire: :warning:
+```
+
+**Disk form is the shortcode, never the glyph.**
+The `.md` always stores `:tada:`; only the renderer translates to 🎉 at display time.
+Same discipline as IDs (invariant #2): the file stays greppable, diffable, and font-independent across devices.
+
+Clients **never** retro-translate a pasted unicode codepoint back into a shortcode — multiple shortcodes can alias the same codepoint (`:+1:` and `:thumbsup:` both → 👍) and the round-trip would be lossy.
+A user who wants the shortcode form types it through the autocomplete (`:roc` + Tab → `:rocket:`).
+
+Catalog gate:
+the parser only tokenizes `:foo:` when `outl_md::emoji::shortcode_to_unicode("foo")` returns a glyph.
+Unknown runs (`:notarealemoji:`, `meeting at 14:00 :`) stay plain — there is no "looks-like-a-shortcode" fallback.
+
+Shortcode shape: `[a-z0-9_+-]+`, single token.
+Covers `:+1:`, `:-1:`, `:smile_cat:`, `:100:`.
+This narrow alphabet is also what makes URL boundaries safe without look-behind.
+Every URL fragment that contains `:` (`https://example.com:8080/api`, `mailto:foo@bar.com`, `git@github.com:avelino/outl.git`) either has an invalid char inside the candidate run (`/`, `.`, `@`) or no closing `:` — `try_emoji` bails on its own.
+
+#### Mentions (`[[@name]]`)
+
+`[[@name]]` is **not a new token**.
+It is a regular page reference whose target literal happens to start with `@`.
+Roundtrip, render, matching, and reconciliation flow through the same code path as `[[ref]]`, no separate parser branch.
+
+What makes it act as a mention is policy on top of the existing primitive:
+
+- **Page identity does not carry the `@`.**
+  The page is `pages/<slug>.md` with `title:: <name>` (no `@`).
+  The `@` belongs to the link affordance, like the `!` in `!((blk-XXXXXX))` belongs to the embed affordance.
+- **Reference resolution strips the `@`.**
+  Opening `[[@avelino]]` resolves to the page `avelino` via the same decision tree as any `[[ref]]` (slug match → slugified match → case-insensitive title match → create).
+  The `@` is consumed by the resolver before the lookup.
+- **Create-on-miss marks the new page as a person.**
+  When the target doesn't exist yet, the resolver creates `pages/<slug>.md` and sets `type:: person` on it automatically.
+  The next mention surfaces the page in the autocomplete popup without the user editing properties by hand.
+- **Backlinks recognise the `@`-aliased form.**
+  A person page's backlinks panel surfaces blocks that wrote `[[@name]]` even though the page slug is `name`.
+  Plain (non-person) pages do not scan the `@`-aliased form, so `[[@projeto]]` in a block does not accidentally show up under a non-person `projeto` page.
+
+#### Autocomplete trigger
+
+While the user is editing a block, every client opens a person picker on a **word-initial `@`** (the same word-initial rule the `#` tag trigger uses: `@` preceded by start-of-line or whitespace).
+The popup lists pages where `type:: person` is set, fuzzy-matched against whatever was typed after the `@`.
+Accepting a candidate inserts `[[@<title>]]` at the caret.
+
+- Composite names work.
+  `@Thiago Avelino` is a valid query — the autocomplete query allows spaces, unlike `#tag` which terminates on the first non-word character.
+- Mid-word `@` is ignored.
+  `a@b.com` (an email) is not a mention.
+- When no existing person matches the query, the popup offers the query itself as a "create new" candidate so a fresh mention can be minted without leaving the keyboard.
+
+The `type::` page-level property is what scopes the autocomplete candidate list (and marks the page semantically).
+The `@`-prefixed link text is what makes the rendered reference visually a mention.
+
+### What is **not** in the file
+
+- ❌ `id::` lines (Logseq-style) — IDs go in the sidecar
+- ❌ `<!-- block-uid: ... -->` — no HTML comments for metadata
+- ❌ YAML frontmatter (`---`) as outl syntax — use `key:: value`; a fence another tool wrote is [kept verbatim](markdown-frontmatter.md)
+- ❌ `\`\`\`outl` fenced metadata blocks
+
+### Permissive parsing & warnings
+
+A hand-written or imported `.md` may contain lines that don't fit the dialect — typically a leading `# heading`, a paragraph, or an HTML snippet.
+(A **table** used to be in that list. It is modelled now — see [Tables](#tables) — so it raises no warning; only a table-looking run with no delimiter row still does.)
+The parser is **permissive at every depth, not just the top level**.
+Such a line is preserved verbatim as a recovered block — a sibling at depth 0, a child of the block above it when indented with no open continuation to absorb it — and the recovery is recorded in `ParsedPage.warnings: Vec<ParseWarning>`.
+
+Each warning carries:
+
+- `line` — 1-based source line number.
+- `raw` — the offending line, verbatim (no trim).
+- `kind` — currently `UnrecognizedBlockMarker` (line didn't start with `- ` and isn't a recognized property).
+
+Two consequences worth knowing:
+
+- **No silent data loss, at any depth.**
+  Open a file, save it, the content survives — including a line nested inside another block's continuation that the grammar can't place.
+  Render is still clean: blocks created from recovered lines render as `- <raw>\n`, so the next save normalizes the file to the dialect.
+- **Surfaces show the warnings.**
+  The TUI banner, the mobile / desktop overlay, and `outl doctor` all read `ParsedPage.warnings` and present them as actionable hints (line number + first 60 chars of the raw text).
+  Users can edit the file at their pace; outl never blocks on a "dirty" page.
+
+---
+
+## The .outl sidecar
+
+For every `pages/foo.md` there is `pages/foo.outl` (sibling file, not a dotfile).
+The dotted form was abandoned in v0: iCloud Documents silently skips paths starting with `.` when syncing across devices, so a dotted sidecar never reached peers and "sync" appeared to lose block IDs.
+Same rule keeps the op directory at `ops/` rather than `.ops/`.
+
+Format: JSON.
+
+```json
+{
+  "version": 2,
+  "page_id": "01HXY8KJZQ9T8M7VN3P2R6S4A0",
+  "last_synced_hash": "sha256:e3b0c44298fc1c14...",
+  "last_synced_at": "2026-05-24T11:22:00-03:00",
+  "blocks": [
+    {
+      "id": "01HXY8KJZQ9T8M7VN3P2R6S4A1",
+      "line": 7,
+      "indent": 0,
+      "content_hash": "sha256:abc123...",
+      "ref_handle": "blk-r6s4a1",
+      "text": "decide the storage backend"
+    },
+    {
+      "id": "01HXY8KJZQ9T8M7VN3P2R6S4A2",
+      "line": 8,
+      "indent": 1,
+      "content_hash": "sha256:def456...",
+      "ref_handle": "blk-r6s4a2",
+      "text": "JSONL first, ChronDB later"
+    }
+  ]
+}
+```
+
+> The sidecar is **structural matching metadata only** — block id, position, content hash, ref handle, last-synced text.
+> State that must converge between devices (fold flags, etc.) lives in the op log (`outl-core`), never here. iCloud syncs the sidecar with LWW per-file, which would silently drop concurrent writes.
+
+### Fields
+
+- `version`: always present, integer.
+  Future migrations check this.
+- `page_id`: ULID of the page itself (the top-level container).
+- `last_synced_hash`: SHA-256 of the full `.md` file at last sync.
+  Used as a fast "did this change?" check.
+- `last_synced_at`: ISO 8601 timestamp with timezone, set on last write.
+- `blocks`: array, in tree order (depth-first, preorder).
+  Each entry:
+  - `id`: ULID of the block.
+  - `line`: 1-indexed line number in the `.md` at last sync.
+  - `indent`: 0 for top-level outline items, 1 for first child, etc.
+  - `content_hash`: SHA-256 of the block's **textual content only**, not including children or property lines that belong to it.
+  - `ref_handle`: short, stable, user-typeable handle for `((blk-XXXXXX))` references.
+    Default-derived from the id (last 6 chars of the ULID's Crockford base32, lowercased, with the `blk-` prefix).
+    Persisted verbatim so future changes to the derivation cannot invalidate references already in the wild.
+  - `text`: the block's content **as of the last sync**, verbatim and untruncated.
+    Optional — see [Sidecar versioning](#sidecar-versioning) for why an additive field like this one does *not* bump `version`.
+    This is the "before" side [level 2](#level-2--medium-confidence) diffs the freshly parsed `.md` against; a hash can only answer "identical or not", so without it a reworded block is indistinguishable from a deleted one.
+    Yes, this duplicates the `.md` body inside the sidecar.
+    A truncated prefix would be smaller but makes two blocks sharing a long opening look identical, and a level-2 false positive hands one block's id — and its `ref_handle` — to a different block.
+    That is the exact corruption matching exists to prevent, so the duplicated bytes are the cheaper side of the trade.
+    A sidecar is a rebuildable cache, not a second source of truth: the `.md` still wins, always.
+
+### Content hash
+
+```
+content_hash(block) = sha256(block.text_content.trim().normalize())
+```
+
+Where `normalize` collapses internal whitespace to single space and strips trailing whitespace.
+This makes the hash robust to whitespace-only edits in external editors.
+
+**Same hash function on read and write.**
+Diverging hashes silently break matching.
+
+### Sidecar versioning
+
+Current version is **`2`**.
+
+`version` answers exactly one question for a reader that did not write the file: *can I still trust the fields I know?*
+Compatibility runs in **both directions**, and the two are not symmetric.
+
+#### Backward — a new binary reading an old sidecar
+
+Always supported, down to `MIN_READABLE_SIDECAR_VERSION` (currently `1`).
+A read path is never dropped when a newer one lands; silent format drops are not allowed.
+
+- A v1 sidecar (no `ref_handle`) loads fine; the field is backfilled in memory by deriving it from the block id.
+- A sidecar with no `text` loads fine; the field comes back empty and **level 2 simply doesn't fire for those blocks**.
+  There is nothing to backfill it from — the point of the field is to hold the text as it was *before* the `.md` on disk changed.
+  Matching degrades to hash + position, exactly what shipped before the field existed, never worse.
+  The next write records the text, so the page is covered from then on.
+- Sidecars below `MIN_READABLE_SIDECAR_VERSION` fail loudly — old workspaces in the wild stay supported until that constant moves.
+
+#### Forward — an already-shipped binary reading a new sidecar
+
+**This is the direction that bites, and it cannot be fixed after the fact.**
+
+Every released binary rejects `version > its own SIDECAR_VERSION`, and that check is frozen in the copies already on users' machines.
+Worse, on the paths that consume a sidecar an *unreadable* one used to look exactly like a *missing* one: no old blocks, so every block matched at level 3, took a fresh ULID, and the old id stayed in the tree.
+One boot of a stale device against a shared folder duplicated the whole page and rotated every `((blk-…))` handle — and the newer binary did the same in reverse on its next boot.
+
+The devices in one workspace never update at the same instant: the mobile build sits on TestFlight for days while the desktop is already ahead, and a laptop can stay closed for a week.
+A version bump is therefore a **break for real users**, not a hypothetical one.
+
+#### The rule
+
+1. **An additive field does NOT bump `version`.**
+   Give it `#[serde(default)]` and the format stays readable in both directions: an older reader ignores the unknown JSON key, a newer reader treats "missing" as "feature off for this entry".
+   `pipeline_version` and `text` are both this shape, which is why both live at version `2`.
+   **Feature detection is per-field presence, never per version number.**
+   An empty `text` disables level 2 for that block whatever number the file carries.
+   That is also the only correct answer once an old binary rewrites the sidecar and drops the field it never knew about.
+2. **Bump only when an older reader would _misread_ the file** — an existing field changes meaning, changes encoding, or goes away.
+   There the old binary's `UnsupportedVersion` is the *desired* outcome: a loud refusal beats silent corruption.
+3. **A bump is a coordinated release, not a patch.**
+   It needs a migration note here and an `outl doctor` path, because every device that has not updated stops reconciling those pages until it does.
+
+Defence in depth for the day rule 2 applies: `reconcile_md` **propagates** `UnsupportedVersion` instead of treating the page as sidecar-less.
+A sidecar written by a newer peer is not corruption, and rebuilding "from scratch" over one is what turns a version mismatch into duplicated blocks.
+(A sidecar that is genuinely corrupt — unparseable JSON — still rebuilds, per the "never block on a corrupt sidecar" rule.)
+
+---
+
+## Roundtrip
+
+```
+parse(render(ast)) == ast
+render(parse(md)) ≈ md
+```
+
+The second is "semantically equivalent", not byte-equivalent.
+We may normalize:
+
+- Tabs → two spaces.
+- Trailing whitespace on lines stripped.
+- Final newline added if missing.
+- Property lines with leading whitespace normalized.
+
+We never:
+
+- Reorder blocks.
+- Change content.
+- Drop properties.
+- Change inline link syntax.
+
+Roundtrip is a **property test** in `crates/outl-md/tests/roundtrip.rs`.
+Treat it as part of the spec — if your parse/render changes break it, either the test is wrong (rare) or your change is.
+
+---
+
+## 3-level matching
+
+When a file save lands on disk and the `.md` differs from the sidecar's `last_synced_hash`:
+
+1. **Parse** new `.md` → `new_ast` (no IDs).
+2. **Read** sidecar → `old_ast` (with IDs, with hashes).
+3. **Match** blocks `new ↔ old` at three confidence levels.
+
+### Level 1 — High confidence
+
+Block matches by:
+- `content_hash` exact match between `old_block` and `new_block`, AND
+- parent matches (by hash of parent, or both are root-level)
+
+→ Preserve ID.
+If position changed, emit `Op::Move`.
+
+### Level 1.5 — Positional fallback
+
+Runs only when the new and old block counts are equal (any insert or delete shifts every following DFS index and makes position meaningless).
+A still-unmatched block at DFS index `i` takes the id of `old_blocks[i]` when that entry is unused, sits at the **same indent**, and has the **same parent**.
+
+Indent is not a parent: two blocks can sit at the same depth under different subtrees.
+Matching on indent alone teleported one subtree's id — and its `((blk-…))` handle — into another subtree.
+A rejection here is not fatal; level 2 below can still recover the id on similarity, and it warns when it does so across parents.
+
+→ Preserve ID.
+Emit `Op::Edit` (and `Op::Move` if needed).
+
+### Level 2 — Medium confidence
+
+Block matches by:
+- Normalized Levenshtein similarity > 80% against the sidecar's `text`, AND
+- a DFS index within ±2 — **unconditional**.
+  Parent agreement is not an alternative gate; it only selects which warning gets logged.
+
+Assignment is by **global confidence**, not by the order blocks appear in the file.
+Every candidate pair is scored first, then resolved from the highest score down, and a winner must beat the runner-up on **both** sides (the best rival for that new block *and* the best rival for that old block) by a margin.
+A pair that fails the margin declines and leaves both of its blocks free to keep competing.
+
+Scoring first is what stops a **newly typed** block from taking the id, and the `((blk-…))` handle, of a block it merely resembles.
+Consuming candidates in file order did exactly that: the new block was reached first and claimed the id, while the block the user actually edited fell to level 3.
+`orphans` came out empty, so nothing was recorded anywhere.
+
+→ Preserve ID.
+Emit `Op::Edit` (and `Op::Move` if needed).
+Log a `tracing` warning carrying the block id and the score — and a distinct, louder one when the match crosses parents (the user reparented *and* reworded the block in the same save).
+
+This level is what carries a block's id through the common external edit: **one save that both rewords a block and adds or removes another**.
+The count mismatch takes level 1.5 out of play, so before level 2 existed every reworded block in such a save minted a fresh ULID, the old id went to the trash, and every reference to it dangled.
+
+A sidecar entry with no recorded `text` — written before the field existed, or by a peer binary that doesn't know it — doesn't fire level 2 at all; the gate is the empty string, not the version number.
+See [Sidecar versioning](#sidecar-versioning).
+Blocks longer than 4096 characters are skipped too: the Levenshtein DP is O(n·m), and a block that size is a pasted document, not a sentence someone reworded.
+
+### Level 3 — No match
+
+Block in `new_ast` has no match in `old_ast`:
+
+→ New ULID assigned.
+Emit `Op::Create`.
+
+Block in `old_ast` has no match in `new_ast`:
+
+→ Move to TRASH_ROOT (`Op::Move` to trash).
+Emit before deletion:
+
+```
+2026-05-24T11:22:01-03:00 orphan block=01HXY... content="começava com..."
+```
+
+**Hard rule:** every level-3 deletion must hit `orphans.log` before the op is committed.
+
+**Second hard rule: level 3 says *what* to delete, never *how much*.**
+One orphan and five thousand come back in the same `Vec<NodeId>`.
+So a `.md` that arrived truncated — an iCloud placeholder whose bytes never downloaded, a half-flushed write, a parser that stopped reading the dialect halfway — empties a page as quietly as deleting one bullet.
+Any caller that turns orphans into `Move(node, TRASH_ROOT)` goes through **`matching::guard::match_blocks_guarded`**, not the raw `match_blocks`.
+Three properties it is built to have, which are also the review checklist for changing it:
+
+- **It cannot lose half a page.**
+  `match_blocks` is pure, so refusing after it ran is refusing before anything exists to apply.
+- **It is never silent.**
+  The refusal is `Err(MatchGuardError::BulkDelete { volume, trip })`, not a shortened orphan list.
+  Quietly dropping the deletions leaves the blocks in the tree and out of the `.md`, which is the divergence the reconcile exists to close.
+- **It has a way out.**
+  `OrphanGuard::Disabled` is what a caller wires to the user saying "yes, I meant that" — today `outl reconcile --allow-bulk-delete`.
+  Reachable only from an explicit act; a retry is not consent (root `CLAUDE.md` invariant 9 and RFC 0211 name a guard with no escape hatch as its own defect class).
+
+The defaults, and why each number is what it is:
+
+| Constant | Value | Why |
+|---|---|---|
+| `MAX_ORPHANED_BLOCKS` | 500 | No hand edit removes five hundred blocks from one page in one save. An unattended import legitimately might, and that is exactly the caller that should have to say so out loud. |
+| `MAX_ORPHANED_RATIO` | 0.75 | Deliberately high. Deleting a section is ordinary editing and costs well under half a page, while a truncated read takes essentially all of it. RFC 0210 already recorded what a guard that fires on real edits costs: it gets disabled, and then it guards nothing. |
+| `RATIO_FLOOR_BLOCKS` | 20 | A ratio is meaningless on a four-block scratch note. Under the floor only the absolute arm applies, which cannot fire that low — small pages are unguarded on purpose: small blast radius, high false-positive cost. |
+Silent deletion is a P0 bug.
+
+### Tiebreakers
+
+When two new blocks would match the same old block (or vice versa) at the same confidence:
+
+1. Prefer matches at the same position.
+2. Prefer matches with the same parent.
+3. Prefer matches where the parent chain matches deepest.
+4. If still tied: pick the one that minimizes total moves across the matching as a whole (greedy is fine for now; optimal can come later).
+
+---
+
+## Edge cases
+
+### Duplicated block (Ctrl+D)
+
+User selects a block in VS Code and presses Ctrl+D.
+Now there are two blocks with identical content.
+
+- First one matches the old `content_hash` at level 1.
+  Keeps ID.
+- Second one has the same hash but its **position** differs from the old one.
+  After the first match is consumed, no other old block has this hash. → Level 3.
+  New ULID.
+
+### Two identical blocks swap parents
+
+A and B both contain "TODO".
+A was under page X, B under page Y.
+After edit, A is under Y, B is under X.
+
+- Pure hash match alone is ambiguous (both new blocks match both old blocks).
+- Tiebreaker: parent matches → A stays under "Y" matches the old A under Y?
+  No — the old A was under X.
+  The "parent matches" tiebreaker breaks.
+- Fall back: minimize total moves.
+  Either pairing requires one move.
+- Then minimize position diff.
+  Pick the assignment that's lexicographically smallest.
+
+This is the case tested in `identical_blocks_swap.rs`.
+
+### Heavy edit (>20% content change)
+
+The content hash is gone.
+Similarity may drop below 80%.
+
+- If still > 80%: level 2, log warning.
+- If below 80% but the counts are unchanged and the parent + indent still agree: level 1.5 keeps the id (structure says it's the same slot).
+- If below 80% AND the counts changed: level 3, treat as a new block — and the old id hits `orphans.log`.
+
+### Rename of header with many children
+
+Heading text changes.
+Children unchanged.
+
+- Header block: hash mismatch.
+  Probably level 2 (similarity > 80% if rename is partial).
+  New ID if rename is total.
+- Children: hash matches.
+  Stay under the (possibly new-ID) header because they were always under "the block at this position".
+
+The structure tiebreaker handles this: we match parent chains, not parent IDs, when parents are themselves ambiguous.
+
+---
+
+## `outl reconcile` (manual resolution)
+
+If the matching produces orphans or level-2 warnings, the user runs:
+
+```
+outl reconcile
+```
+
+A TUI opens showing one orphan at a time with candidates.
+Keys:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | next/prev candidate |
+| `enter` | accept match |
+| `d` | confirm delete (orphan stays as `Move` to trash) |
+| `s` | skip (revisit later) |
+| `q` | quit |
+
+---
+
+## External paste → outl syntax
+
+When the user pastes clipboard markdown from another outliner / note app into outl, `outl_actions::paste_markdown` (in `outl-actions`) normalises the input before parsing it as bullets.
+The same pipeline runs in every client — the TUI (bracketed-paste handler), the desktop, and mobile (textarea `onPaste`).
+This section is only the **syntax-translation table**; for how paste works as a whole (with / without formatting, rich `text/html` conversion, paragraph splitting) see [Paste](paste.md).
+
+| Input (external) | Output (outl) | Origin |
+|------------------|---------------|--------|
+| `{{[[TODO]]}} foo` | `TODO foo` | Roam |
+| `{{[[DOING]]}} foo` | `DOING foo` | Roam |
+| `{{[[DONE]]}} foo` | `DONE foo` | Roam |
+| `- [ ] foo` | `- TODO foo` | GitHub / CommonMark task list |
+| `- [/] foo` | `- DOING foo` | Logseq / Obsidian tasks |
+| `- [x] foo` / `- [X] foo` | `- DONE foo` | GitHub / CommonMark |
+| `{{embed: ((blk-XXXXXX))}}` | `!((blk-XXXXXX))` | Roam |
+| `{{[[query]]: foo}}` | `{{query: foo}}` | Roam |
+| `^^highlight^^` | `==highlight==` | Roam |
+| `{{video: url}}` and other unknown `{{…}}` | (stripped) | various |
+| `id:: <26-char Crockford ULID>` (alone on a line) | (line dropped) | Logseq |
+| `[[June 2nd, 2026]]`, `[[Apr 22nd, 2026]]`, `[[2026/04/22]]` | `[[2026-06-02]]` etc. | Roam / mixed |
+| 4-space indent | 2-space indent | Roam / Notion export |
+
+A balanced `^^highlight^^` is rewritten to outl's native `==highlight==`.
+Unknown `{{…}}` tokens that aren't outl-native are stripped on purpose so blocks land clean.
+A lone unbalanced `^^` has no pair to convert or strip, so it survives verbatim.
+Block properties parsed off the source (`key:: value` indented under a bullet) become `Op::SetProp` on the newly-created node so they converge across devices like every other op.
+
+Date refs `[[…]]` whose inner text parses as a date land as the ISO slug outl uses for journals.
+Supported forms: long month (`June 2nd, 2026`), short month (`Apr 22nd, 2026`), slashed ISO (`2026/04/22`).
+Plain page refs (`[[Avelino]]`) and ambiguous dates (`[[June 2nd]]` without a year) pass through untouched.
+
+The `id::` line strip is strict.
+Only 26-character Crockford base32 strings count.
+A random 26-character alphanumeric label (e.g.
+`id:: IIIILLLLOOOO0000000000000A`) is not a ULID and stays on the page.
+
+Heuristic: when no line is either a bare `-` or starts with `- ` (after leading whitespace), the paste is treated as plain text.
+The clipboard payload is spliced into the current block at the caret, no tree conversion.
+The bare `-` form matches the parser, which treats a lone `-` on a line as an empty bullet.
+
+Caret offsets in the mobile client are converted from UTF-16 code units (what `textarea.selectionStart` reports) into Unicode codepoints before the Tauri round-trip.
+This ensures pasting after an emoji or other supplementary-plane character lands the splice at the right spot.
+
+The orphan log is cleared as items are resolved.
+
+## What the parser preserves, and what it still gets wrong
+
+The rules below are the outcome of [issue #210](https://github.com/outlmd/outl/issues/210) and the four regressions introduced while fixing it.
+`crates/outl-md/CLAUDE.md` keeps the contract; this is the detail behind it, including the shapes that are **known, unfixed, and deliberately so**.
+
+**Blank lines and indentation inside a block's text now round-trip.**
+A whitespace-only line indented deeper than the block (what `render::write_block_text` emits for a blank line mid-continuation) folds into `text`; only a genuinely empty line closes continuation.
+A continuation line's own indentation survives via the private `strip_indent_levels` helper, which strips only the levels the renderer added.
+An over-indented line the grammar still can't place is recovered as a **child block** at its written depth (warning, not a silent drop).
+Getting any of these three wrong is the issue #210 producer — measured at 41 pages / 387 lines on a real workspace, and 0 after the fix.
+**A block's text may also *start* with a newline, and that round-trips too.**
+`outl_actions::block::edit_text` writes text verbatim, so `"\na"` is reachable from an ordinary paste, and the renderer writes it as `- ` (marker, space, nothing) plus one continuation line.
+Reading that back as the single-line block `"a"` dropped an empty line, and the dropped line was the **empty string** — exactly what `unlogged::disk_line` maps a bare marker to.
+So the page reported one unlogged line (`""`) on every pass, `reconcile_md` withheld `last_synced_hash` forever, and the invariant-8 guard refused to re-project.
+Worse, the recovery that error names (`outl reconcile --ahead-of-log`) re-runs the same reconcile, emits zero ops, recomputes the same `[""]` and withholds again: the page froze in **both** directions with no way out, and the message quoted the empty string at the user.
+`parse::declares_first_line` is the inverse of the renderer's only branch (`-` for empty text, `- ` for text whose first line is empty), and `parse::needs_newline_separator` is the **single owner** of "does what comes next need a `\n` in front of it".
+Three sites ask it — prose continuation, over-indented continuation, and a fence opener — and the fence one did not share the guard, so `"\n```"` still lost its empty first line until a property test found it.
+That same arm also failed to flush held blank lines, so `"a\n\n```…"` lost the blank before the fence.
+**Fences are both CommonMark fence characters.**
+`fence::fence_marker` recognises ``` ``` ``` and `~~~`, and the marker travels with the opener (including into the synthetic close) so a fence closes only on its **own** character — the other one inside the body is content.
+Before this, a bullet inside a `~~~` fence became a real block, with an `UnrecognizedBlockMarker` raised against a line the user wrote correctly.
+**A UTF-8 BOM is stripped before anything reads the file.**
+U+FEFF is not whitespace, so `trim` left it glued to the first `- ` and the first line stopped being a bullet: the whole first block was recovered as verbatim text with its marker inside it, and a leading `title::` stopped being a page property the same way.
+Any `.md` written by a Windows editor lost its first block's identity on import.
+`frontmatter::strip_bom` is the single owner of where those bytes end, and it sits next to the fence scan rather than in the parser for a reason: while only the grammar called it, `\u{feff}---` was frontmatter to `parse` and no fence at all to `frontmatter_line_count`, so [the unlogged-content check](#the-outl-sidecar) skipped none of the fence's lines and reported every one of them as content the op log never saw.
+That withholds `last_synced_hash` and refuses every re-projection, permanently — the write that would have dropped the BOM is the same write being refused.
+The same strip runs in `unlogged`, so a BOM'd file with no fence at all (the mark glued to the first bullet) does not read as one unlogged line either.
+
+**Known, unfixed, and deliberately so.**
+All four are convergent and guard-safe — each costs one `Op::Edit` and none can freeze a page — and each would be a grammar decision rather than a bug fix:
+- a `- ` line **inside** a block's text splits the block in two, minting a fresh ULID and `((blk-…))` handle for the tail (reachable by pasting a markdown list into one block);
+- a `key:: value` line inside a block's text becomes a block *property*;
+- leading whitespace the indent machinery cannot count as a whole level (a single space, or U+00A0) is trimmed off a continuation line, and any leading whitespace is trimmed off a first line;
+- a fence marker stranded **after** a child block is recovered as verbatim child blocks that each re-open a fence on the next parse, so the document settles on the third save rather than the first (bounded — pass 3 is stable; 0 occurrences in 2,856 real files).

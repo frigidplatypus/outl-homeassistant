@@ -1,0 +1,281 @@
+name: CI
+
+# Trigger filter: `paths-ignore` skips CI when every changed file is
+# in the list. Docs-only PRs, asset bumps, and edits to sibling
+# workflow files don't need fmt + clippy + test + doc to run.
+# `Cargo.toml` / `Cargo.lock` stay out of the ignore list on purpose
+# so dependency changes always trigger the full check.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'assets/**'
+      - 'LICENSE'
+      - '.editorconfig'
+      - '.gitignore'
+      - '.github/workflows/mobile.yml'
+      - '.github/workflows/bench.yml'
+      - '.github/workflows/hygiene.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/testflight.yml'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'assets/**'
+      - 'LICENSE'
+      - '.editorconfig'
+      - '.gitignore'
+      - '.github/workflows/mobile.yml'
+      - '.github/workflows/bench.yml'
+      - '.github/workflows/hygiene.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/testflight.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+# Cancel the previous CI run when a newer commit lands on the same
+# ref. Status reported on `main` (and on a PR) is the one that matters
+# for the latest tip; the older fmt/clippy/test run for the parent
+# commit just burns runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Runner sizing across this file is measured, not guessed: see the
+  # numbers recorded in `docs/development.md` → "Runner sizing".
+  # `cargo fmt` never compiles anything (16s wall clock, no cargo
+  # build), so the smallest SKU is the right one.
+  fmt:
+    name: rustfmt
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain (rustfmt)
+        run: rustup show
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  # RustSec gate. Dependabot only surfaces a fraction of the RustSec
+  # advisories for this workspace (it showed 1 while an OSV scan of
+  # Cargo.lock found 17), so `cargo deny check advisories` fails the PR
+  # on any known vulnerability in the lockfile. Ignores live in
+  # `deny.toml`, each with a reason. Never compiles, so smallest SKU.
+  advisories:
+    name: cargo-deny advisories
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain
+        run: rustup show
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-deny@0.20.2
+      - name: cargo deny check advisories
+        run: cargo deny --locked check advisories
+
+  # 8 vCPU: clippy is a pure compile job and the 4 vCPU run sat at 71%
+  # average CPU with only 2.6 GB of 16 GB used — CPU-bound, memory to
+  # spare. Blacksmith bills per vCPU-minute, so doubling cores is
+  # roughly billing-neutral as long as rustc keeps scaling, and it
+  # halves the wall clock a human waits on.
+  clippy:
+    name: clippy
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain (clippy)
+        run: rustup show
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "v0.8-rust"
+      - name: cargo clippy
+        # outl-mobile, outl-desktop and outl-tauri-shared pull Tauri
+        # deps (glib-sys, gobject-sys, webkit2gtk) that need system
+        # GTK libs we don't install here. Mobile is covered by
+        # `mobile.yml` on macOS; desktop + the shared crate build via
+        # the `desktop.yml` matrix (Linux runs with GTK installed
+        # there).
+        run: cargo clippy --workspace --exclude outl-mobile --exclude outl-desktop --exclude outl-tauri-shared --all-targets -- -D warnings
+
+  # The check name is `matrix.label`, never `matrix.os`, on purpose.
+  # Branch protection matches required checks by *name*, so having the
+  # runner SKU in the name means every runner change (this migration
+  # included) silently renames the required check and leaves `main`
+  # waiting forever on a check that no longer reports. `linux` /
+  # `macos` are stable across any future SKU move.
+  test:
+    name: test (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 8 vCPU: measured 76% average CPU and 4.7 GB of 16 GB on
+          # 4 vCPU — the same CPU-bound / memory-idle shape as clippy.
+          - os: blacksmith-8vcpu-ubuntu-2404
+            label: linux
+          # 6 vCPU is the smallest macOS SKU Blacksmith offers.
+          - os: blacksmith-6vcpu-macos-15
+            label: macos
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain
+        run: rustup show
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "v0.8-rust"
+      - name: cargo test
+        # outl-mobile, outl-desktop and outl-tauri-shared depend on
+        # Tauri's macOS/iOS-specific surface and on system GTK libs we
+        # don't install on Linux. Mobile is covered by `mobile.yml` on
+        # macOS; desktop + the shared crate via the `desktop.yml`
+        # matrix.
+        run: cargo test --workspace --exclude outl-mobile --exclude outl-desktop --exclude outl-tauri-shared --all-targets
+
+      # The run above never compiles `scrub_event`, because the `sentry`
+      # feature is off by default (RFC 0377 condition 1) and that is the
+      # whole point of the default. The consequence is that the one
+      # function deciding what leaves a user's machine, and the seven
+      # tests pinning its allowlist, were dead code on every PR: the
+      # only build that turns the feature on is `release.yml`, which
+      # runs no tests. A `sentry` bump that adds an `Event` field would
+      # have shipped the field and the test that catches it would never
+      # have run.
+      - name: cargo test (crash-report scrubber)
+        run: cargo test -p outl-telemetry --features sentry --all-targets
+      # Same reason, and the crate's CLAUDE.md asks for both: the
+      # no-feature build is what every contributor gets, the feature
+      # build is what every user gets.
+      - name: cargo clippy (crash-report scrubber)
+        run: cargo clippy -p outl-telemetry --features sentry --all-targets -- -D warnings
+
+  docs:
+    name: cargo doc
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain
+        run: rustup show
+      # `cargo doc --workspace` compiles every dependency exactly like
+      # clippy and test do; this job was the only Rust job in the file
+      # running without the cache, paying a cold build every run.
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "v0.8-rust"
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        # See clippy / test jobs above: outl-mobile, outl-desktop and
+        # outl-tauri-shared need system GTK libs we don't install on
+        # Linux. Mobile docs build via `mobile.yml` on macOS; desktop +
+        # shared-crate docs via the `desktop.yml` matrix.
+        run: cargo doc --workspace --exclude outl-mobile --exclude outl-desktop --exclude outl-tauri-shared --no-deps
+
+  # Dedicated sync-convergence gate. The `test` job above already
+  # compiles and runs `outl-core` + `outl-sync-iroh` (including their
+  # `tests/` integration + property suites via `--all-targets`), but it
+  # runs proptests at the dev default (200 cases) and buries a sync
+  # regression inside a broad matrix job. This job exists so a sync
+  # regression surfaces as its own obviously-red check, and so the
+  # convergence/chaos proptests actually *explore* in CI.
+  #
+  # `PROPTEST_CASES` is proptest's built-in override of each suite's
+  # `ProptestConfig::with_cases(...)`. Dev runs stay fast at the 200
+  # baked into the test files; CI bumps it to 1024 here so the
+  # probabilistic convergence bugs (op reordering, cycle no-ops,
+  # concurrent moves) get a real number of generated cases. Keep this
+  # budget on this one job only — running 1024 across the whole
+  # `test` matrix would burn runner minutes for no extra signal.
+  #
+  # Branch protection: mark **`sync`** as a required status check in
+  # the repo settings so a red convergence run blocks merge. (Required
+  # checks are a GitHub repo setting, not something this file can
+  # declare.)
+  sync:
+    name: sync
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      # Higher than the dev default baked into the proptest files so CI
+      # explores the convergence/chaos space. Bump further (2048+) when
+      # chasing a rare flake; lower only with a recorded reason.
+      PROPTEST_CASES: 1024
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain
+        run: rustup show
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "v0.8-rust"
+      - name: cargo test (sync convergence)
+        run: cargo test -p outl-core -p outl-sync-iroh --all-targets
+
+  # Frontend gate for the whole bun workspace, in `ci.yml` rather than
+  # in the per-client workflows on purpose.
+  #
+  # `desktop.yml` runs `bun --filter outl-desktop test` and `mobile.yml`
+  # runs vitest with `working-directory: crates/outl-mobile`, so each
+  # covers only its own package. That left `@outl/shared` — 22 test
+  # files, 335 assertions, the library both clients import — with no
+  # gate anywhere, and it left every client suite behind a `paths:`
+  # filter that does not list the crates it actually depends on
+  # (`outl-frontend-shared`, `outl-shortcuts`, `outl-theme`). A change
+  # to the shared library or to a Rust catalog the TS side mirrors could
+  # go green without a single frontend test running.
+  #
+  # `ci.yml` has no `paths:` allowlist (only `paths-ignore` for docs and
+  # assets), so this job runs on effectively every code change — which
+  # is the property the parity tests need. `shortcuts.support.test.ts`
+  # pins the desktop handler map against `outl_shortcuts::support`
+  # (invariant 12) and the theme suites pin the token names against
+  # `outl_theme::Palette` (invariant 13); both are worthless if they
+  # only run when someone happens to touch the client directory.
+  #
+  # Cheapest runner on purpose: vitest across all three packages is
+  # ~4s wall clock and never saturated 2 vCPU. No GTK / Tauri system
+  # deps here — these are happy-dom unit suites, not app builds.
+  frontend:
+    name: frontend
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      # `setup-bun` caches the bun binary, not the packages it installs.
+      - name: Cache bun install cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - name: bun install
+        run: bun install --frozen-lockfile
+      # Root scripts fan out over every workspace package that declares
+      # the script (`bun --filter '*'`), so a new client is covered the
+      # day its package.json lands — no edit here required.
+      - name: vitest (all packages)
+        run: bun run test
+      # tsc was desktop-only before this job existed: `@outl/shared` and
+      # `outl-mobile` type-checked nowhere despite shipping in both apps.
+      - name: tsc --noEmit (all packages)
+        run: bun run typecheck
+
+  # The repo hygiene checks (file size ratchet, docs index) live in
+  # `hygiene.yml`, not here: this workflow's `paths-ignore` skips
+  # `docs/**` and `**/*.md`, which is exactly the change set a docs
+  # index check has to run on.

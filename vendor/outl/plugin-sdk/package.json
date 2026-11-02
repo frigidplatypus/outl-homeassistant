@@ -1,0 +1,35 @@
+{
+  "name": "@outl/plugin-sdk",
+  "version": "0.8.0-beta.130",
+  "description": "TypeScript SDK for authoring outl plugins. Types-only contract — the host implementation is injected by the outl runtime (Boa/Rust) at load time.",
+  "license": "MIT",
+  "homepage": "https://outl.app/docs/query#plugin-sdk-api-outlquery",
+  "bugs": {
+    "url": "https://github.com/outlmd/outl/issues"
+  },
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "outl",
+    "plugin",
+    "sdk",
+    "outliner"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/outlmd/outl.git",
+    "directory": "plugin-sdk"
+  }
+}

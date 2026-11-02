@@ -1,0 +1,38 @@
+[package]
+name = "outl-actions"
+description = "UI-agnostic workspace actions (edit, indent, toggle, journal projection) shared across outl clients."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+outl-core = { workspace = true }
+outl-md = { workspace = true }
+# Used by `outl_actions::exec` (shared `run_code_block` glue). No
+# runtime features enabled here on purpose — the binary that consumes
+# this crate (CLI / TUI / desktop / mobile) selects the languages it
+# wants in its own Cargo.toml, and Cargo unions the feature set per
+# build target. Keeping this dep "feature-less" means `outl-actions`
+# doesn't pull `wasmtime` into the mobile IPA via the back door.
+outl-exec = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+tracing = { workspace = true }
+fs2 = { workspace = true }
+walkdir = "2"
+yrs = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,379 @@
+//! Wire types shared by every GUI client.
+//!
+//! These are the reply shapes the Solid frontends (via `@outl/shared`)
+//! deserialize — field names and shapes are part of the wire contract.
+//! The `AppState` structs themselves stay in the client crates (their
+//! fields differ); only what crosses the Tauri bridge lives here.
+
+use outl_actions::{ActionError, Backlink, OutlineNode, PageMeta};
+use serde::Serialize;
+
+/// Tauri event emitted when a post-mutation projection could not be written.
+pub const PROJECTION_WRITE_FAILED_EVENT: &str = "projection-write-failed";
+
+/// Sentinel error returned by workspace-touching commands while the
+/// workspace is still being opened (background thread) or while the
+/// user hasn't picked one yet. The frontend retries on a short interval.
+pub const ERR_LOADING: &str = "workspace_loading";
+
+/// Returned by the `workspace_stats` command.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceSummary {
+    pub blocks: usize,
+    pub ops: usize,
+    pub actor: String,
+    pub storage_root: String,
+    /// `true` when a workspace is loaded; `false` while the picker is
+    /// still up or the background opener is in flight.
+    pub ready: bool,
+    /// Whether [`Self::ops`] is the whole log.
+    ///
+    /// `ops` is `Workspace::log().len()`, the **resident** log, and a
+    /// workspace that booted from a snapshot replays only the delta above
+    /// the cutoff. Printing that as a total is not a rounding error: on a
+    /// real workspace it is 332 against 228,943, on the one number a user
+    /// reads to ask how big their graph is, and it reads as data loss.
+    ///
+    /// Same verdict, from the same source, as `outl workspace info`'s
+    /// `ops_complete` and `outl_actions::activity`'s `DeviceActivity`
+    /// `complete`. A client that renders `ops` renders this beside it.
+    pub ops_complete: bool,
+}
+
+/// Reply shape for every "open page / open journal" command. Bundles
+/// the page meta with the outline so the frontend gets everything in
+/// one trip.
+///
+/// `warnings` is the verbatim `outl_md::ParseWarning` list surfaced by
+/// `outl_actions::read_page_outline_with_workspace`; the shared
+/// `<ParseWarningsBanner />` consumes it. Empty (or absent) on a clean
+/// file — `skip_serializing_if` keeps the JSON quiet.
+#[derive(Debug, Clone, Serialize)]
+pub struct PageView {
+    pub page: PageMeta,
+    pub outline: Vec<OutlineNode>,
+    pub backlinks: Vec<Backlink>,
+    /// Direction `backlinks` was sorted in (`[display] backlinks_order`,
+    /// issue #142). Carried on the view so a client's direction toggle
+    /// shows the right arrow at boot without a separate settings read.
+    /// Serialises as `"newest"` / `"oldest"`.
+    pub backlinks_order: outl_config::BacklinksOrder,
+    /// The page's own `key:: value` properties, alpha-sorted, with the
+    /// structural keys (`page-slug`, `page-kind`) filtered out by
+    /// `outl_actions::property::page_properties`.
+    ///
+    /// Same shape as `OutlineNode.properties`, so both feed the one
+    /// editor component. Without this the GUI clients could not even
+    /// *see* `icon::` / `type::`, let alone change them, which left the
+    /// TUI as the only way to touch page metadata.
+    #[serde(default)]
+    pub page_properties: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<outl_md::ParseWarning>,
+    /// Set when this page's `.md` could not be refreshed from the op log
+    /// because it holds content no op accounts for
+    /// (`ActionError::PageMarkdownAheadOfLog`). `None` on every healthy
+    /// page — `skip_serializing_if` keeps the JSON quiet.
+    ///
+    /// The page still opens: the guard only withholds the *write*, so
+    /// the view below is the `.md` as it stands on disk. What the user
+    /// loses is convergence — see [`MdAheadOfLog`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub md_ahead_of_log: Option<MdAheadOfLog>,
+    /// `true` when this reply actually ran the re-projection check, so
+    /// `md_ahead_of_log` is authoritative **in both directions**.
+    ///
+    /// Only the open commands attempt the re-projection that discovers
+    /// the condition; a mutation reply is built from the tree and could
+    /// never carry the flag. A client therefore has to keep the banner
+    /// across mutation replies (otherwise the user's first edit clears
+    /// the warning about editing), and this bit is what tells it when
+    /// clearing *is* right: an open reply with no notice means the page
+    /// is healthy again — `outl reconcile --ahead-of-log` ran — and a
+    /// banner that outlives the condition is the mirror of the silence
+    /// [`MdAheadOfLog`] exists to end.
+    ///
+    /// Deliberately on the wire instead of re-derived per client: both
+    /// GUI frontends were guessing it from "same page id / same slug",
+    /// and two guesses drift.
+    #[serde(default)]
+    pub md_ahead_of_log_checked: bool,
+    /// Non-refusal projection failure after the mutation committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_error: Option<String>,
+}
+
+impl PageView {
+    /// Stamp the open path's re-projection verdict onto the view.
+    ///
+    /// The one place that sets both halves, so an open command cannot
+    /// report the notice while leaving the reply looking unchecked (the
+    /// clients would then never clear the banner) or the reverse.
+    #[must_use]
+    pub fn with_ahead_of_log_check(mut self, ahead: Option<MdAheadOfLog>) -> Self {
+        self.md_ahead_of_log = ahead;
+        self.md_ahead_of_log_checked = true;
+        self
+    }
+}
+
+/// Why a page stopped syncing, in the shape a client can render.
+///
+/// The re-projection guard (root `CLAUDE.md` invariant 8) refuses to
+/// overwrite a `.md` holding content that exists in no op, because that
+/// write would delete it for good. The cost of refusing is that the page
+/// is frozen in *both* directions: those lines never reach another
+/// device, and a peer's edits never reach this `.md`.
+///
+/// Before this DTO existed the refusal died in a `tracing::warn!` and
+/// the page simply stopped updating with nothing said — the exact
+/// "silence is the defect" failure [RFC 0210] names. `outl reconcile
+/// --ahead-of-log` is the recovery, and a mobile-only device has no
+/// binary to run it with, which is why the copy is per-client and lives
+/// in `@outl/shared/warnings`.
+///
+/// [RFC 0210]: https://github.com/outlmd/outl/blob/main/docs/rfcs/0210-md-content-outside-op-log.md
+#[derive(Debug, Clone, Serialize)]
+pub struct MdAheadOfLog {
+    /// The `.md` that was left alone, for the "which file" question.
+    pub path: String,
+    /// How many content lines exist only on disk.
+    pub lines: usize,
+    /// One of those lines (already quoted by `ActionError`), so the
+    /// banner names what is at risk instead of only counting it.
+    pub sample: String,
+}
+
+/// Projection failure carried internally after a mutation already succeeded.
+#[derive(Debug, Clone)]
+pub(crate) struct ProjectionFailure {
+    pub path: Option<String>,
+    pub md_ahead_of_log: Option<MdAheadOfLog>,
+    pub error: String,
+}
+
+impl ProjectionFailure {
+    pub fn from_error_at(path: Option<&std::path::Path>, error: &ActionError) -> Self {
+        Self {
+            path: path.map(|path| path.to_string_lossy().into_owned()),
+            md_ahead_of_log: MdAheadOfLog::from_error(error),
+            error: error.to_string(),
+        }
+    }
+}
+
+/// Payload of the `ref-projection-failed` event: `open_ref` resolved the
+/// target (the page is in the op log) but writing `pages/<slug>.md` +
+/// sidecar failed. Transient — the next save or the orphan scanner
+/// retries — so the client shows a toast, not the sticky banner.
+///
+/// A struct rather than the `serde_json::json!` literal it used to be.
+/// The literal emitted the same two keys, and that was exactly the
+/// problem: a payload with no Rust type has nothing for
+/// `tests/wire_types.rs` to serialize, so the desktop's
+/// `RefProjectionFailedPayload` mirror was unpinnable by construction —
+/// the same blind spot enums were in. The JSON is byte-identical.
+#[derive(Debug, Clone, Serialize)]
+pub struct RefProjectionFailed {
+    /// The ref target the user clicked, as written.
+    pub target: String,
+    /// Why the projection could not be written.
+    pub error: String,
+}
+
+impl RefProjectionFailed {
+    /// Build the payload from the borrowed values the emit site holds.
+    pub fn new(target: &str, error: &str) -> Self {
+        Self {
+            target: target.to_string(),
+            error: error.to_string(),
+        }
+    }
+}
+
+/// Failure reported after a mutation was already persisted in the op log.
+///
+/// This is an event rather than a command error because returning `Err` would
+/// falsely tell the caller that the mutation failed. `md_ahead_of_log` selects
+/// the sticky recovery banner; other failures retain their original message.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectionWriteFailed {
+    pub page_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub md_ahead_of_log: Option<MdAheadOfLog>,
+    pub error: String,
+}
+
+impl ProjectionWriteFailed {
+    pub fn from_error(page_id: outl_core::id::NodeId, error: &ActionError) -> Self {
+        Self {
+            page_id: page_id.to_string(),
+            md_ahead_of_log: MdAheadOfLog::from_error(error),
+            error: error.to_string(),
+        }
+    }
+}
+
+impl MdAheadOfLog {
+    /// The wire shape of [`outl_actions::ProjectionRefusal::AheadOfLog`],
+    /// or `None` for every other failure.
+    ///
+    /// Delegates rather than re-matching: the TUI asks the same question
+    /// on its own open path and cannot reach this crate, so the classifier
+    /// lives in `outl-actions` and this is the DTO projection of it
+    /// ([#292](https://github.com/outlmd/outl/issues/292)).
+    pub(crate) fn from_error(error: &ActionError) -> Option<Self> {
+        let outl_actions::ProjectionRefusal::AheadOfLog {
+            path,
+            lines,
+            sample,
+        } = outl_actions::ProjectionRefusal::from_error(error)
+        else {
+            return None;
+        };
+        Some(Self {
+            path,
+            lines,
+            sample,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectionWriteFailed;
+    use outl_actions::ActionError;
+    use outl_core::id::NodeId;
+
+    #[test]
+    fn post_mutation_refusal_keeps_structured_banner_data() {
+        let failure = ProjectionWriteFailed::from_error(
+            NodeId::new(),
+            &ActionError::PageMarkdownAheadOfLog {
+                path: "/w/pages/notes.md".into(),
+                lines: 2,
+                sample: "\"offline note\"".into(),
+            },
+        );
+
+        let notice = failure
+            .md_ahead_of_log
+            .expect("ahead-of-log refusal must select the sticky banner");
+        assert_eq!(notice.lines, 2);
+        assert!(failure.error.contains("offline note"));
+    }
+
+    #[test]
+    fn other_projection_failures_are_not_mislabelled_as_a_refusal() {
+        let failure = ProjectionWriteFailed::from_error(
+            NodeId::new(),
+            &ActionError::NotInTree("missing".into()),
+        );
+
+        assert!(failure.md_ahead_of_log.is_none());
+        assert!(failure.error.contains("missing"));
+    }
+}
+
+/// Reply shape for the lazy `page_backlinks` command.
+///
+/// Backlinks are **not** bundled into [`PageView`] anymore:
+/// `backlinks_for_page` is an `O(blocks-in-workspace)` scan, and computing
+/// it inside `build_page_view` blocked every page open and every block
+/// edit synchronously (a ~66k-node workspace made the first journal paint
+/// take seconds on desktop, more on mobile). The frontend now fetches
+/// backlinks lazily after the outline paints — the same lazy/cached policy
+/// the TUI has always used for its backlinks panel. `PageView.backlinks`
+/// stays in the wire shape but comes back empty from the open commands.
+#[derive(Debug, Clone, Serialize)]
+pub struct BacklinksReply {
+    pub backlinks: Vec<Backlink>,
+    /// Direction the list was sorted in (`[display] backlinks_order`).
+    pub backlinks_order: outl_config::BacklinksOrder,
+    /// Blocks that reached this page only through a descendant —
+    /// `#os/linux` arriving at `os` (issue #275). **Capped** at
+    /// `commands::page_backlinks::NAMESPACE_BACKLINK_CAP`;
+    /// `namespace_backlinks_total` is the
+    /// real count.
+    ///
+    /// Separate from `backlinks` because this set has no natural size:
+    /// on a real workspace `buser` names 448 sources and collects 3,221
+    /// more this way. Shipping them in one list put ~292 KB of block
+    /// text on the IPC per page open and made the panel unreadable.
+    pub namespace_backlinks: Vec<Backlink>,
+    /// How many blocks reached this page through a descendant, before
+    /// the cap. Clients show it so a truncated list says so.
+    pub namespace_backlinks_total: usize,
+    /// Pages nested under this one's namespace (`os` → `os/linux`,
+    /// `os/linux/debian`), title-sorted, each carrying its depth —
+    /// issue #275.
+    ///
+    /// Rides the backlinks reply rather than a command of its own
+    /// because it answers the same question at the same moment ("what
+    /// else points here"), is derived from the page list this call
+    /// already holds, and would otherwise cost a second command, a
+    /// second wrapper in `wrappers/catalog.rs`, and a second round trip
+    /// per page open on all three clients.
+    pub namespace_children: Vec<outl_actions::NamespaceChild>,
+}
+
+/// One hit from `search_blocks` — the `((…))` block-ref autocomplete.
+///
+/// The frontend inserts `handle` wrapped in `((…))` (never the display
+/// `text`: block refs resolve by handle, not by content) and shows
+/// `text` + `source_slug` as the suggestion label.
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockHit {
+    /// Ref handle to insert, e.g. `blk-r6s4a1`.
+    pub handle: String,
+    /// The block's node id, for selecting it once its page is open.
+    pub id: String,
+    /// Block text (snippet) for the popup label.
+    pub text: String,
+    /// Slug of the page hosting the block, for context.
+    pub source_slug: String,
+}
+
+/// One structural template surfaced by `list_templates` — the `/template`
+/// picker in every GUI client. Mirrors the invocation `name` (what the
+/// user picks) and the `slug` of the page that defines the body.
+///
+/// Deliberately narrower than `outl_actions::TemplateEntry`: the GUIs
+/// only need the name (label) + slug (secondary label / dedupe key);
+/// `page_id` and `params` are backend detail the pick doesn't carry.
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateDto {
+    /// Invocation name (the value of the page's `template::` property).
+    pub name: String,
+    /// Slug of the page that defines the template.
+    pub slug: String,
+    /// `true` when another page shares this `template:: <name>` — the
+    /// picker surfaces it so the user knows a duplicate silently
+    /// shadows the rest (resolution picks the first in tree order).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub duplicate: bool,
+}
+
+/// Reply for `create_block`. Pairs the refreshed [`PageView`] with the
+/// id of the freshly-inserted block so the frontend can focus / start
+/// editing it without re-discovering the id via a DFS diff (the diff
+/// path mis-identified the new block when the anchor had children
+/// — `flat[idx+1]` would land on `children[0]` instead of the new
+/// sibling, and the eventual `edit_block` would target a stale id and
+/// surface the `block <ULID> is not in the tree` toast).
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateBlockReply {
+    pub view: PageView,
+    pub new_id: String,
+}
+
+/// Reply for `cut_block`. `markdown` is the removed block's (and its
+/// subtree's) clean outl markdown — hand it to `paste_block_after` to
+/// materialize the cut elsewhere. `view` is the page with the block
+/// already moved to the trash root (`Op::Move`, never a physical
+/// removal — root `CLAUDE.md` invariant 6).
+#[derive(Debug, Clone, Serialize)]
+pub struct CutBlockReply {
+    pub markdown: String,
+    pub view: PageView,
+}

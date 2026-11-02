@@ -1,0 +1,240 @@
+//! Tree → markdown projection (page and single-block forms).
+
+use std::collections::HashMap;
+
+use outl_core::id::NodeId;
+use outl_core::workspace::Workspace;
+use outl_md::parse::{OutlineNode, ParsedPage};
+use outl_md::render::render;
+
+use crate::outline::ChildrenIndex;
+use crate::tree::{is_page_model_key, renderable_prop_value, sort_in_presentation_order};
+
+/// Renderable properties of the nodes in one projection, grouped by the
+/// node carrying them and alpha-sorted per node — exactly the shape a
+/// rendered block wants, so the per-node path is a map lookup.
+type PropertiesByNode = HashMap<NodeId, Vec<(String, String)>>;
+
+/// The subtree as walked, before properties are attached.
+///
+/// [`OutlineNode`] carries no id, and the property scan needs the whole
+/// id set before it can run — so the walk produces this, the scan runs
+/// once, and [`build_outline`] turns it into the outline.
+struct Skeleton {
+    id: NodeId,
+    text: String,
+    children: Vec<Skeleton>,
+}
+
+/// Walk `parent`'s subtree in render order, materialising block text but
+/// no properties.
+///
+/// Children come from `children` rather than `crate::tree::children_of`,
+/// which rescans every node in the workspace per call — one scan per
+/// block rendered. Same trade as `subtree_properties` below, in the
+/// other dimension: one pre-built map instead of a per-node filter.
+fn walk_subtree(workspace: &Workspace, parent: NodeId, children: &ChildrenIndex) -> Vec<Skeleton> {
+    children
+        .get(&parent)
+        .map(|kids| {
+            kids.iter()
+                .map(|&id| Skeleton {
+                    id,
+                    text: workspace.block_text(id).unwrap_or_default(),
+                    children: walk_subtree(workspace, id, children),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn collect_ids(skeletons: &[Skeleton], out: &mut Vec<NodeId>) {
+    for node in skeletons {
+        out.push(node.id);
+        collect_ids(&node.children, out);
+    }
+}
+
+/// Every renderable property carried by one of `ids`, grouped by node.
+///
+/// `ids` must be sorted — the scan binary-searches it per property.
+///
+/// **One scan for the whole projection, not one per node.**
+/// [`outl_core::tree::Tree::properties_of`] filters the workspace-wide
+/// property map on *every* call, so asking it per node is
+/// `O(nodes × properties)`; its own doc comment says as much. Measured
+/// on a synthetic 64k-node / 192k-property workspace, `render_page_md`
+/// went from 13.8 ms/page to 4.4 ms/page purely from collapsing those
+/// per-node filters into this single `iter_properties` pass.
+///
+/// Note this scan is **subtree-scoped**, which is the part that is easy
+/// to get wrong. Grouping the *whole* workspace instead — the obvious
+/// reading of "build the map once" — is a net loss here, because a page
+/// render then allocates a `Vec` and two `String`s for all 192k
+/// properties to read the ~80 belonging to its own blocks. Measured, it
+/// was 2.7× *slower* than the per-node filtering it replaced. The
+/// whole-workspace map is right for a whole-workspace pass (see
+/// `crate::index::build_properties_index`) and wrong for a single page.
+fn subtree_properties(workspace: &Workspace, ids: &[NodeId]) -> PropertiesByNode {
+    let mut grouped: PropertiesByNode = HashMap::new();
+    for (node, key, value) in workspace.tree().iter_properties() {
+        if ids.binary_search(&node).is_err() {
+            continue;
+        }
+        let Some(text) = renderable_prop_value(value) else {
+            continue;
+        };
+        grouped
+            .entry(node)
+            .or_default()
+            .push((key.to_string(), text));
+    }
+    // Order comes from `crate::tree::sort_in_presentation_order`, which
+    // owns why it is alphabetical and what the `HashMap`'s per-process
+    // seed costs a reader of the `.md` diff.
+    for props in grouped.values_mut() {
+        sort_in_presentation_order(props);
+    }
+    grouped
+}
+
+/// Turn the walked skeleton into outline nodes, attaching each block's
+/// properties.
+///
+/// **No page-model filtering here, deliberately.** `page-slug` /
+/// `page-kind` are book-keeping *on a page root*; on an ordinary block
+/// they are whatever the user typed. The dialect has no allow-list of
+/// property keys, so `parse_property_line` accepts them and `diff_to_ops`
+/// emits a `SetProp` like any other. Dropping them on render would put
+/// the value in the tree and nowhere on disk, and the next external-edit
+/// reconcile would emit the removal — convergent data loss.
+///
+/// Rendering block properties used to be skipped entirely
+/// (`properties: Vec::new()`), so any op → `.md` re-render silently
+/// deleted the property lines from disk and the next reconcile emitted
+/// prop-removal ops: the same loss, surfaced by the importer's resolve
+/// pass.
+fn build_outline(skeletons: Vec<Skeleton>, properties: &PropertiesByNode) -> Vec<OutlineNode> {
+    skeletons
+        .into_iter()
+        .map(|node| OutlineNode {
+            text: node.text,
+            properties: properties.get(&node.id).cloned().unwrap_or_default(),
+            children: build_outline(node.children, properties),
+        })
+        .collect()
+}
+
+/// Project `parent`'s subtree, returning `parent`'s own properties
+/// alongside its rendered children — both off a single property scan
+/// and one `parent -> children` map.
+fn project_subtree(
+    workspace: &Workspace,
+    parent: NodeId,
+    children: &ChildrenIndex,
+) -> (Vec<(String, String)>, Vec<OutlineNode>) {
+    let skeleton = walk_subtree(workspace, parent, children);
+    let mut ids = Vec::with_capacity(16);
+    ids.push(parent);
+    collect_ids(&skeleton, &mut ids);
+    ids.sort_unstable();
+
+    let properties = subtree_properties(workspace, &ids);
+    let own = properties.get(&parent).cloned().unwrap_or_default();
+    (own, build_outline(skeleton, &properties))
+}
+
+/// Render every block under `page_root` to a clean `.md` string,
+/// **including** the page-level properties stored on the page node
+/// (`title::`, `icon::`, `pinned::`, `type::`, `role::`, anything
+/// custom). The page's title (`workspace.block_text(page_root)`) is
+/// **not** included in the body — clients can prepend it themselves
+/// if they want.
+///
+/// The page model's book-keeping ([`crate::tree::is_page_model_key`]) is
+/// skipped: `outl_actions::page` owns those keys through its own ops, and
+/// surfacing them here would re-write the slug on every reconcile (a
+/// no-op via the CRDT, but noise on disk).
+///
+/// One of them, `page-frontmatter`, does belong in the file — as a `---`
+/// fence, not a `key:: value` line — so it is **lifted into
+/// `ParsedPage::frontmatter` before that filter runs**. See
+/// `render_page_md_with`.
+///
+/// Sort order is alphabetical on the key — see `subtree_properties`.
+pub fn render_page_md(workspace: &Workspace, page_root: NodeId) -> String {
+    render_page_md_with(
+        workspace,
+        page_root,
+        &crate::tree::children_index(workspace, page_root),
+    )
+}
+
+/// [`render_page_md`] against a caller-supplied `parent -> children`
+/// map, for a pass that renders **many** pages.
+///
+/// The map may be scoped to this page or cover the whole workspace —
+/// the walk only ever reads entries inside `page_root`'s subtree, so
+/// both answer identically. Which one to hand it is the amortization
+/// question, and it has a measured answer: a whole-workspace map costs
+/// ~5 ms at 64k nodes against ~0.5 ms for a scoped one, so it pays only
+/// when one map serves every page. [`render_page_md`] scopes; a sweep
+/// over `crate::page::list_all` should build
+/// `crate::backlinks_index::build_children_index` once and pass it here.
+pub(crate) fn render_page_md_with(
+    workspace: &Workspace,
+    page_root: NodeId,
+    children: &ChildrenIndex,
+) -> String {
+    let (mut properties, blocks) = project_subtree(workspace, page_root, children);
+
+    // A page whose `.md` opened with a YAML frontmatter fence carries it in
+    // the op log under `PAGE_FRONTMATTER_KEY` (`outl_md::parse` refuses to
+    // read it as outline, issue #281). Lift it out of the property list and
+    // into the field the renderer writes the `---` delimiters from.
+    //
+    // **Before the `is_page_model_key` filter, which hides this key too.**
+    // Filtering first deletes the fence from every projection, which is the
+    // exact write the issue reported.
+    let frontmatter = properties
+        .iter()
+        .position(|(k, _)| k == outl_md::PAGE_FRONTMATTER_KEY)
+        .map(|at| properties.remove(at).1);
+    properties.retain(|(k, _)| !is_page_model_key(k));
+
+    let page = ParsedPage {
+        frontmatter,
+        properties,
+        blocks,
+        warnings: Vec::new(),
+    };
+    render(&page)
+}
+
+/// Render the block `node` and its subtree to clean outl markdown as
+/// a single top-level bullet (with its descendants nested under it).
+///
+/// This is the "copy block" projection: the desktop's `Cmd+C` in view
+/// mode hands the result to the clipboard, and the matching paste
+/// re-ingests it through the same `paste_markdown` pipeline external
+/// clipboard text uses — so a copy duplicates the subtree with fresh
+/// ids. Reuses the exact projection [`render_page_md`] writes to disk,
+/// so a copied block reads identically to how it lives in the `.md`.
+pub fn render_block_md(workspace: &Workspace, node: NodeId) -> String {
+    let index = crate::tree::children_index(workspace, node);
+    let (properties, children) = project_subtree(workspace, node, &index);
+    let block = OutlineNode {
+        text: workspace.block_text(node).unwrap_or_default(),
+        properties,
+        children,
+    };
+    let page = ParsedPage {
+        // A block projection is a fragment, not a file: frontmatter is a
+        // page-level fact and there is no page here to own one.
+        frontmatter: None,
+        properties: Vec::new(),
+        blocks: vec![block],
+        warnings: Vec::new(),
+    };
+    render(&page)
+}

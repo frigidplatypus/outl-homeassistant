@@ -1,0 +1,187 @@
+@import "tailwindcss";
+@import "@outl/shared/highlight/styles";
+@import "@outl/shared/warnings/styles";
+@import "@outl/shared/peers/styles";
+@import "@outl/shared/trust/styles";
+@import "@outl/shared/polish/styles";
+@import "@outl/shared/plugins/styles";
+@import "@outl/shared/diagram/styles";
+
+/*
+ * Tailwind v4 content scanning. By default the plugin walks the
+ * directory the entry CSS lives in; `@outl/shared` is a *sibling*
+ * workspace package (`../outl-frontend-shared/src/`), so without
+ * an explicit `@source` Tailwind never sees `MarkdownInline.tsx`
+ * and silently skips every `text-(--color-outl-accent)` /
+ * `bg-(--color-outl-accent)/12` class it uses. Result on the
+ * canvas: refs / tags / bold render as plain text instead of the
+ * accented pills the renderer expects.
+ *
+ * Glob is relative to this file; the path resolves to the same
+ * `crates/outl-frontend-shared/src` directory `vite.config.ts`'s
+ * `resolve.alias` points at.
+ */
+@source "../../outl-frontend-shared/src/**/*.{ts,tsx}";
+
+/*
+ * Theme tokens. Boot values are `outl` brand defaults; at runtime
+ * `@outl/shared/theme::applyPaletteToRoot()` rewrites every
+ * `--color-*` on `<html>` to match the active preset returned by
+ * the `get_theme` Tauri command.
+ *
+ * `text-(--color-outl-accent)` / `bg-(--color-outl-accent)/12` are
+ * Tailwind v4's arbitrary-property shorthand — they resolve the CSS
+ * custom property at paint time whether or not `@theme` declares
+ * it, so `@theme` is NOT what makes the class work. What `@theme`
+ * actually buys: a boot value for the *first painted frame*, before
+ * `applyPaletteToRoot()` runs over the wire. A name declared here
+ * that doesn't match a real `Palette` field just means that one
+ * token repaints correctly on the first frame instead of arriving
+ * unset until the palette lands a moment later (root CLAUDE.md
+ * invariant 13's "Not theory" paragraph has the incident this
+ * used to describe wrong; this comment is the corrected version).
+ *
+ * The shared `@outl/shared/markdown::MarkdownInline` reads the same
+ * `--color-outl-*` namespace as desktop-native components; there
+ * is one namespace now (RFC 0022 deleted the legacy `--color-ios-*`
+ * / `--color-iosd-*` pair once the shared renderers migrated off it).
+ */
+@theme {
+  /*
+   * The one floating surface: autocomplete, property pickers, the
+   * quick switcher. Radius and shadow live here so every popover is
+   * the same object. The shadow mixes the palette's `fg` instead of a
+   * frozen black, same reasoning as mobile's `--shadow-capsule`: black
+   * vanishes on `outl` and is heavy on `outl-light`.
+   */
+  --radius-pop: 0.5rem;
+  --shadow-pop:
+    0 1px 2px color-mix(in srgb, var(--color-outl-fg) 6%, transparent),
+    0 8px 24px color-mix(in srgb, var(--color-outl-fg) 10%, transparent);
+
+  /* Canonical --color-outl-* tokens (palette boot-defaults). */
+  --color-outl-bg: #0c0814;
+  --color-outl-bg-elev: #15101f;
+  --color-outl-fg: #f4f1fa;
+  --color-outl-fg-dim: #b4adc7;
+  --color-outl-fg-dimmer: #7b7390;
+  --color-outl-border: #382c54;
+  --color-outl-accent: #a78bfa;
+  --color-outl-accent-fg: #0c0814;
+  --color-outl-accent-soft: #c4b5fd;
+  --color-outl-accent-alt: #d6ff47;
+  --color-outl-warn: #fbbf24;
+  --color-outl-destructive: #fb7185;
+  --color-outl-destructive-fg: #0c0814;
+  --color-outl-ref-link-fg: #a78bfa;
+  --color-outl-tag-link-fg: #f0abfc;
+  --color-outl-md-link-fg: #7dd3fc;
+  --color-outl-bold-fg: #f4f1fa;
+  --color-outl-code-fg: #d6ff47;
+  --color-outl-todo-open-fg: #fbbf24;
+  --color-outl-todo-done-fg: #d6ff47;
+  --color-outl-highlight-bg: #fbbf24;
+  --color-outl-highlight-fg: #0c0814;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+/*
+ * `@layer base` so Tailwind's preflight (which sets `body {
+ * background-color: …; color: … }` in some configurations) doesn't
+ * beat us at the cascade. Without this the user sees a white
+ * window because preflight wins.
+ *
+ * Belt-and-suspenders: `@outl/shared/theme` also writes inline
+ * `style="background-color:…"` on `<body>` after each `applyPalette`
+ * call. Inline styles top everything; the cascade rules below are
+ * the static fallback so the boot frame is already brand-colored
+ * before any JS runs.
+ */
+@layer base {
+  /*
+   * Lock the height chain to the viewport. `height: 100%` (not
+   * `min-height: 100vh`) is load-bearing: with `min-height`, body
+   * and #root grow to fit the content, which makes every
+   * descendant `h-full` resolve against an unbounded parent. The
+   * outline's inner `overflow-y-auto` then thinks "I already fit"
+   * and the whole document scrolls instead. Pinning each level to
+   * a fixed `height: 100%` is what makes the outline scroll
+   * inside its column.
+   *
+   * `overflow: hidden` on body/#root keeps the outer scrollbar
+   * out (the grid cell that wants to scroll opts in explicitly).
+   */
+  html {
+    background-color: var(--color-outl-bg);
+    color: var(--color-outl-fg);
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background-color: var(--color-outl-bg);
+    color: var(--color-outl-fg);
+  }
+  #root {
+    height: 100%;
+    overflow: hidden;
+    background-color: var(--color-outl-bg);
+    color: var(--color-outl-fg);
+  }
+}
+
+/*
+ * Row chrome: visible when the row is, hidden when it is not.
+ *
+ * `.outl-row-chrome` marks the per-row affordances that would be noise
+ * on every line at rest. Today that is the fold chevron. The bullet is
+ * NOT chrome (it is how you read the outline) and neither are the indent
+ * guides (a column cue, see `BlockRow.tsx`).
+ *
+ * `focus-within` is not decoration. Without it the chevron is
+ * unreachable by keyboard, which turns "quieter at rest" into "fold is
+ * mouse-only".
+ *
+ * Deliberately unlayered. Tailwind utilities live in `@layer utilities`,
+ * and an `@layer` rule always loses to an unlayered one regardless of
+ * specificity, so this has to sit outside a layer to own the property.
+ */
+.outl-row-chrome {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.outl-row:hover .outl-row-chrome,
+.outl-row:focus-within .outl-row-chrome,
+.outl-row[data-selected="true"] .outl-row-chrome,
+.outl-row[data-visual="true"] .outl-row-chrome,
+.outl-row[data-editing="true"] .outl-row-chrome {
+  opacity: 1;
+}
+
+/*
+ * A reader who asked for less motion still gets the reveal, just
+ * without the fade.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .outl-row-chrome {
+    transition: none;
+  }
+}
+
+/*
+ * Keyboard focus ring. Only on :focus-visible, so a mouse click never
+ * paints it, but Tab, arrows and F6 always show where you are.
+ */
+:where(button, a[href], [role="button"], [role="toolbar"] *, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-outl-accent);
+  outline-offset: 2px;
+}

@@ -1,0 +1,85 @@
+# Cargo build artifacts
+/target
+**/target
+debug
+
+# JS/TS frontend (bun workspaces — outl-frontend-shared, outl-mobile, outl-desktop)
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+
+# npm pack output (e.g. `npm pack` in plugin-sdk/ for a pre-publish smoke test)
+*.tgz
+
+# Tauri auto-generated capability schemas (regenerated on every build by tauri-build).
+# `gen/apple/` (mobile) is manual config and intentionally committed.
+**/src-tauri/gen/schemas/
+
+# Backups from rustfmt
+**/*.rs.bk
+
+# MSVC Windows builds
+*.pdb
+
+# cargo-mutants
+**/mutants.out*/
+
+# cargo-llvm-cov / tarpaulin
+/coverage
+*.profraw
+lcov.info
+
+# JetBrains / VS Code
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# Device store for cargo-launched builds (identity key, actor, endpoint lease).
+# Deliberately outside `target/`: `cargo clean` there rotates this machine's
+# iroh node id and silently voids every existing pairing. See .cargo/config.toml.
+/.dev-device-store/
+
+# Local outl workspace for dev/test
+/playground/
+/.outl-test/
+/.outl/
+/lerolero/
+
+# Scratch dir for screenshots, captures, throwaway artefacts
+/.tmp/
+
+# Generated SQLite WAL files (when testing)
+*.db-wal
+*.db-shm
+
+note-example/
+
+# Criterion bench artefacts (regenerated on every run, large)
+**/criterion/
+
+# Claude Code session-local state (process locks, etc.)
+.claude/*.lock
+
+# Python bytecode (CI scripts run uncached; locally we may have caches)
+__pycache__/
+*.pyc
+
+# Local-only helper scripts (per-machine TestFlight smoke tests, etc.)
+# Versioned scripts live elsewhere; anything matching `local-*` is
+# treated as personal scratch and never goes to the repo.
+scripts/local-*.sh
+
+docs/app-store-*
+.lsp/
+.clj-kondo/
+.envrc
+
+# Written by .claude/skills/run-desktop/battery: the last state the
+# layout battery passed against. Local, never shared.
+.claude/.ux-battery-stamp

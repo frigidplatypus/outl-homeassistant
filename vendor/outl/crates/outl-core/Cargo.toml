@@ -1,0 +1,59 @@
+[package]
+name = "outl-core"
+description = "Tree CRDT, op log, storage trait, domain models for outl."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ulid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+postcard = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+yrs = { workspace = true }
+sha2 = { workspace = true }
+parking_lot = { workspace = true }
+chrono = { workspace = true }
+fs2 = { workspace = true }
+# Home / roaming-app-data resolution for the device store (`device.rs`),
+# where the per-device actor id lives. Deliberately NOT inside the
+# workspace: anything under `<root>/` rides the file-sync surface.
+dirs = { workspace = true }
+lru = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+libc = { workspace = true }
+filetime = { workspace = true }
+criterion = { version = "0.8", default-features = false, features = ["html_reports"] }
+
+# `outl-core` had no benchmarks at all until this branch, which made
+# "the CRDT is fast" an unverifiable claim. Same shape as
+# `outl-md/benches`: one binary per area, `common.rs` shared by all via
+# `#[path = "common.rs"] mod common;`.
+
+[[bench]]
+name = "tree"
+harness = false
+path = "benches/tree.rs"
+
+[[bench]]
+name = "boot"
+harness = false
+path = "benches/boot.rs"
+
+[[bench]]
+name = "oplog"
+harness = false
+path = "benches/oplog.rs"

@@ -1,0 +1,31 @@
+{
+  "name": "outl",
+  "slug": "outl",
+  "description": "Local-first outliner with P2P sync. Serves the outl UI in a Home Assistant panel, exposes the MCP server, and shares the workspace volume with the rest of Home Assistant.",
+  "version": "0.1.0",
+  "startup": "application",
+  "boot": "auto",
+  "arch": ["aarch64", "amd64"],
+  "ingress_port": 8090,
+  "panel": true,
+  "panel_title": "outl",
+  "panel_icon": "mdi:note-text",
+  "panel_admin": true,
+  "options": {
+    "workspace": "/data"
+  },
+  "schema": {
+    "workspace": "str"
+  },
+  "map": [
+    "/data",
+    "/home/outl"
+  ],
+  "environment": {
+    "OUTL_WORKSPACE": "${workspace}",
+    "OUTL_PORT": "8090"
+  },
+  "privileged": [],
+  "hassio_api": false,
+  "image": "ghcr.io/<user>/outl-homeassistant-addon:{arch}"
+}

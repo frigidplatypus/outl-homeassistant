@@ -1,0 +1,26 @@
+{
+  "why": [
+    "RFC 0363: turning a share sheet's text + URL into the one line that goes",
+    "to the capture inbox has two implementations, and only because an iOS",
+    "share extension cannot load the Rust library:",
+    "  outl_actions::capture::shared_line        (the owner; Android + outl capture)",
+    "  OutlKit/Capture/SharedLine.swift          (iOS only)",
+    "Both test suites read THIS file, so a case answered differently on one",
+    "side fails there instead of reaching a user as a share that lost its",
+    "link. Add a case here, never to one suite alone.",
+    "`line: null` means 'nothing to save' — the caller says so rather than",
+    "writing an empty capture."
+  ],
+  "cases": [
+    { "why": "nothing at all", "text": null, "url": null, "line": null },
+    { "why": "whitespace only is nothing", "text": "  \n\t ", "url": null, "line": null },
+    { "why": "text alone", "text": "read this", "url": null, "line": "read this" },
+    { "why": "a link alone (sharing from a browser's address bar)", "text": null, "url": "https://outl.app/rfc", "line": "https://outl.app/rfc" },
+    { "why": "a link not already in the text is appended", "text": "read this", "url": "https://outl.app/rfc", "line": "read this https://outl.app/rfc" },
+    { "why": "a link already in the text is not repeated", "text": "see https://outl.app/rfc now", "url": "https://outl.app/rfc", "line": "see https://outl.app/rfc now" },
+    { "why": "a capture is one block, so newlines collapse", "text": "first\n\n  second  \nthird", "url": null, "line": "first second third" },
+    { "why": "a title plus its link, which is what a browser shares", "text": "Read this\n later", "url": "https://outl.app/rfc", "line": "Read this later https://outl.app/rfc" },
+    { "why": "surrounding whitespace is trimmed off each line", "text": "  padded  ", "url": null, "line": "padded" },
+    { "why": "an empty text with a link is the link", "text": "", "url": "https://outl.app", "line": "https://outl.app" }
+  ]
+}

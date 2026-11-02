@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Home screen widget: one tap opens `outl://capture`.
+
+  No colour of its own. Root `CLAUDE.md` invariant 13 puts every colour
+  behind `outl_theme::Palette`, and `applyPaletteToRoot()` cannot reach a
+  native widget any more than it reaches the iOS one — which answers this
+  the same way, with system colours and nothing declared. `?android:attr`
+  resolves against the launcher's theme here, so the widget follows the
+  home screen it sits on.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/capture_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="12dp"
+    android:background="@android:color/transparent"
+    android:contentDescription="@string/capture_title">
+
+    <ImageView
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:src="@drawable/ic_outl_capture"
+        android:tint="?android:attr/textColorPrimary"
+        android:importantForAccessibility="no" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="@string/capture_title"
+        android:textColor="?android:attr/textColorPrimary"
+        android:textSize="13sp"
+        android:maxLines="1" />
+</LinearLayout>

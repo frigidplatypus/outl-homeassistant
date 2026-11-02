@@ -1,0 +1,985 @@
+name: Mobile
+
+# Runs on every PR / push that touches the mobile crate or the
+# shared crates the mobile app depends on. The iOS build is opt-in
+# because it needs macOS and Xcode — push the button on the
+# "Actions" tab when you want a fresh `.app`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/outl-mobile/**"
+      - "crates/outl-actions/**"
+      - "crates/outl-core/**"
+      - "crates/outl-md/**"
+      # The mobile app imports `@outl/shared` and mirrors the same Rust
+      # catalogs the desktop does, yet none of them were listed: a change
+      # confined to the shared library (or to a catalog) skipped this
+      # workflow entirely, so neither the mobile vitest suite nor the iOS
+      # build ran on the change most likely to break them.
+      - "crates/outl-frontend-shared/**"
+      - "crates/outl-shortcuts/**"
+      - "crates/outl-theme/**"
+      # Both clients call `outl_telemetry::init` at the top of `run()` and
+      # read `[telemetry] enabled` through `outl-config`, so a change
+      # confined to either crate can break a client's boot or its Privacy
+      # section with no client job running (RFC 0377).
+      - "crates/outl-telemetry/**"
+      - "crates/outl-config/**"
+      - "package.json"
+      - "bun.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/mobile.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/outl-mobile/**"
+      - "crates/outl-actions/**"
+      - "crates/outl-core/**"
+      - "crates/outl-md/**"
+      # The mobile app imports `@outl/shared` and mirrors the same Rust
+      # catalogs the desktop does, yet none of them were listed: a change
+      # confined to the shared library (or to a catalog) skipped this
+      # workflow entirely, so neither the mobile vitest suite nor the iOS
+      # build ran on the change most likely to break them.
+      - "crates/outl-frontend-shared/**"
+      - "crates/outl-shortcuts/**"
+      - "crates/outl-theme/**"
+      # Both clients call `outl_telemetry::init` at the top of `run()` and
+      # read `[telemetry] enabled` through `outl-config`, so a change
+      # confined to either crate can break a client's boot or its Privacy
+      # section with no client job running (RFC 0377).
+      - "crates/outl-telemetry/**"
+      - "crates/outl-config/**"
+      - "package.json"
+      - "bun.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/mobile.yml"
+  workflow_dispatch:
+    inputs:
+      ios_build:
+        description: "Run the iOS Simulator build job"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      release_build:
+        description: "Run the iOS App Store release build (signed IPA artifact)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+# Cancel any in-flight mobile run as soon as a newer commit lands on
+# the same ref. Pushing two main commits in quick succession otherwise
+# produces two parallel iOS builds, each one happy to upload its own
+# IPA to TestFlight (the downstream `testflight` workflow uses
+# `cancel-in-progress: false` because a half-uploaded archive is hard
+# to roll back). Cancelling the mobile build itself is the cheaper
+# guard — the older commit never reaches the upload stage.
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # macOS minutes bill at 6.67x Linux, so this job carries only the
+  # work that *needs* macOS: `outl-mobile` itself, which pulls Tauri's
+  # iOS surface and can't build on the Linux CI runners.
+  #
+  # `outl-actions`, `outl-core` and `outl-md` used to be listed here
+  # too. Their tests already run on Linux *and* on macOS in
+  # `ci.yml::test`, so this job was the third execution of the same
+  # suites — on the most expensive hardware in the pipeline (it was
+  # 55% of the total bill of a full run). They still get *compiled*
+  # here, as dependencies of `outl-mobile`, so a breaking change in
+  # them still fails this job. `cargo fmt` moved out for the same
+  # reason: `ci.yml::fmt` runs `--all` on a 2 vCPU Linux runner and
+  # rustfmt output does not vary by platform.
+  rust-check:
+    name: rust (clippy + test) — outl-mobile
+    runs-on: blacksmith-6vcpu-macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        run: rustup show
+      # `rust-cache` instead of a hand-rolled `actions/cache`: the old
+      # key hashed **/Cargo.toml, so every manifest edit anywhere in
+      # the workspace threw away the whole macOS target dir, and the
+      # raw `target/` it stored grew without bound.
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "v0.8-rust"
+          shared-key: mobile-macos
+      - name: cargo clippy (mobile)
+        run: cargo clippy -p outl-mobile --all-targets -- -D warnings
+      - name: cargo test (mobile)
+        run: cargo test -p outl-mobile --all-targets
+
+  # 2 vCPU: vitest + a Vite build finish in ~12s and never saturated
+  # 4 vCPU. Half the SKU, half the bill, same wall clock.
+  frontend:
+    name: frontend (vitest + build)
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    defaults:
+      run:
+        working-directory: crates/outl-mobile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      # `setup-bun` caches the bun binary, not the packages.
+      - name: Cache bun install cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - name: bun install
+        run: bun install --frozen-lockfile
+      - name: vitest
+        run: bun run test
+      - name: bun run build
+        run: bun run build
+
+  # OutlKit hosts every piece of pure Foundation logic the iOS side
+  # needs (toolbar MFU ordering, suggester chip / state parsers,
+  # iCloud ops file predicate, JS string escape, brand color). It's a
+  # Foundation-only Swift Package so `swift test` runs standalone on
+  # any macOS runner — no simulator, no signing, no Xcode workspace.
+  # The iOS app target consumes OutlKit as a local SPM dependency
+  # (see project.pbxproj → XCLocalSwiftPackageReference).
+  #
+  # "Foundation-only" does *not* mean "runs on Linux": OpsFilePredicate
+  # builds an `NSPredicate` over `NSMetadataItemFSNameKey`, and
+  # NSMetadata is Spotlight — Apple platforms only, absent from
+  # swift-corelibs-foundation. `Package.swift` declares `.iOS` +
+  # `.macOS` and no Linux platform for exactly that reason. So this
+  # job stays on macOS despite the 6.67x rate; 6 vCPU is already the
+  # smallest macOS SKU.
+  swift-tests:
+    name: swift (OutlKit unit tests)
+    runs-on: blacksmith-6vcpu-macos-15
+    defaults:
+      run:
+        working-directory: crates/outl-mobile/swift/OutlKit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Show toolchain
+        run: swift --version
+      - name: swift test
+        run: swift test --parallel
+
+  ios-build:
+    name: iOS Simulator build (opt-in)
+    runs-on: blacksmith-6vcpu-macos-15
+    # Run when explicitly requested or on a PR labelled `ios-build`.
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.ios_build == 'true' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'ios-build'))
+    needs: [rust-check, frontend, swift-tests]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+      - name: Install Rust toolchain + iOS targets
+        run: |
+          rustup show
+          rustup target add aarch64-apple-ios-sim x86_64-apple-ios
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "v0.8-rust"
+          shared-key: ios-sim
+      # `cargo install tauri-cli` compiles the CLI from source, which
+      # is several minutes of macOS-rate build time on every run. The
+      # install step is already guarded by `command -v`, so caching
+      # the built binary turns it into a no-op on a hit. Keyed on the
+      # requested version so a bump reinstalls.
+      - name: Cache cargo-tauri binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: ${{ runner.os }}-cargo-tauri-v2
+      - name: Install tauri-cli
+        run: |
+          if ! command -v cargo-tauri >/dev/null; then
+            cargo install tauri-cli --version "^2.0" --locked
+          fi
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      - name: bun install
+        working-directory: crates/outl-mobile
+        run: bun install --frozen-lockfile
+      - name: cargo tauri ios build (simulator, debug)
+        working-directory: crates/outl-mobile
+        run: cargo tauri ios build --target aarch64-sim --debug
+      - name: Upload simulator .app artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: outl-ios-sim-debug
+          path: crates/outl-mobile/src-tauri/gen/apple/build/arm64-sim/outl.app
+          if-no-files-found: error
+          retention-days: 7
+
+  # ----------------------------------------------------------------
+  # iOS App Store release build.
+  #
+  # Produces a fully signed `.ipa` (Apple Distribution + App Store
+  # provisioning profile) and uploads it as the `outl-ios-release`
+  # artifact. `testflight.yml` consumes this artifact via
+  # `actions/download-artifact@v8` and only runs the altool upload —
+  # so the heavy build only happens once.
+  #
+  # Triggers:
+  #   - every push to `main` that matches the workflow paths filter
+  #   - manual workflow_dispatch with `release_build = true`
+  #
+  # The job is bound to the `release` environment because that's
+  # where the signing secrets live (same set TestFlight uses):
+  # BUILD_CERTIFICATE_BASE64, P12_PASSWORD, MAC_KEYCHAIN_PASSWORD,
+  # PROVISIONING_PROFILE_BASE64.
+  #
+  # Crash reporting (RFC 0377) adds two more:
+  #
+  #   OUTL_SENTRY_DSN_MOBILE   repository secret. DSN of the `outl-mobile`
+  #                            Sentry project, shared with `release.yml`'s
+  #                            build_android
+  #   SENTRY_AUTH_TOKEN        secret of the `release` environment, not a
+  #                            repository secret. Scope `project:releases`,
+  #                            for the dSYM upload. This job already selects
+  #                            that environment, so the token is visible here.
+  #                            `release.yml` selects it on `main` and `v*`
+  #                            tags for the same reason. The DSN stays a
+  #                            repository secret: it is write-only, and it
+  #                            is not a reason to hand a job the Apple
+  #                            certificates above.
+  #
+  # **A build without either keeps working.** The DSN is read by
+  # `option_env!` at compile time, so unset means the reporter compiles
+  # to a no-op; the dSYM upload warns and continues. Nothing here gates
+  # on a secret being present, and nothing may start to.
+  # ----------------------------------------------------------------
+  ios-release:
+    name: iOS device build (signed IPA artifact)
+    runs-on: blacksmith-6vcpu-macos-15
+    needs: [rust-check, frontend, swift-tests]
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.event.inputs.release_build == 'true')
+    environment:
+      name: release
+    # Secrets live on the step that reads them, never on the job: a job
+    # `env` is inherited by every build step, and anything a build script
+    # snapshots from its environment ends up in the artifact.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compute build metadata
+        id: meta
+        shell: bash
+        run: |
+          # CFBundleShortVersionString: marketing version from Cargo.toml
+          # with the `-beta.N` suffix stripped (Apple rejects pre-release
+          # tags in this field).
+          BASE=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          SHORT_VERSION="${BASE%%-*}"
+
+          # CFBundleVersion: marketing version concatenated with a
+          # zero-padded run number, e.g. SHORT 0.5.3 + run 47 → 0.5.3047.
+          # Apple compares CFBundleVersion as a tuple of integers split
+          # on `.`, component-by-component. Padding the run number to a
+          # fixed width keeps the third component monotonic across the
+          # full history:
+          #   (0, 5, 3047) > (0, 5, 3027)   because 3047 > 3027
+          # And across run-number generations (run 999 → 1000) the
+          # integer keeps growing, so `printf '%03d'` is a floor, not
+          # a cap — `1000` widens naturally and stays correct.
+          #
+          # This is the standard "semver-aligned build counter" pattern
+          # for an iOS app whose marketing version stays stable across
+          # many TestFlight builds. The trade-off (the build column
+          # looks like `0.5.3047`, visually close to a semver) is
+          # accepted because the alternative — a fresh integer like
+          # `47` — gets ranked below the existing `0.5.3027` history
+          # by Apple's left-pad comparison rule.
+          RUN_PAD=$(printf '%03d' "${{ github.run_number }}")
+          BUILD_NUMBER="${SHORT_VERSION}${RUN_PAD}"
+
+          # Re-runs of the same Mobile workflow would otherwise hit
+          # Apple's duplicate guard (409 ENTITY_ERROR.ATTRIBUTE.
+          # INVALID.DUPLICATE). A fourth component on attempts > 1
+          # keeps each upload unique. TestFlight accepts 4 components;
+          # App Store production submission caps at 3, but we never
+          # ship a re-run to production directly.
+          if [[ "${{ github.run_attempt }}" -gt 1 ]]; then
+            BUILD_NUMBER="${BUILD_NUMBER}.${{ github.run_attempt }}"
+          fi
+
+          echo "short_version=${SHORT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "::notice::iOS release ${SHORT_VERSION} (build ${BUILD_NUMBER})"
+
+      # User-facing release notes for TestFlight. `conventional-changelog`
+      # reads Conventional Commits since the last `v*` tag and emits a
+      # markdown changelog grouped by type (Features / Bug Fixes /
+      # Performance / etc.). `testflight.yml` picks `release-notes.md`
+      # out of the IPA artifact and posts it as
+      # `betaBuildLocalizations.whatsNew` via the App Store Connect API.
+      #
+      # Why `conventional-changelog-cli` and not `semantic-release`:
+      # semantic-release runs a `git push --dry-run` even in `--dry-run`
+      # mode to validate write permission, and this job's GITHUB_TOKEN
+      # is read-only (no `contents: write`). conventional-changelog is
+      # the same generator semantic-release uses internally for notes;
+      # it just doesn't touch the remote.
+      #
+      # Fallback: if no Conventional Commits landed since the last
+      # tag (early days of the convention), fall back to raw `git log`
+      # subjects so the build still ships with *something* readable.
+      - name: Setup Node (conventional-changelog)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "20"
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          LAST_TAG=$(git tag --list 'v*' --sort=-version:refname | head -n1)
+          echo "::notice::generating notes since ${LAST_TAG:-<no previous tag>}"
+
+          # `-r 1` = render only the most recent release (commits since
+          # the previous tag). Drops the auto-generated `## [version]`
+          # heading via `tail` so what reaches TestFlight is just the
+          # categorized list.
+          npx -y \
+            -p conventional-changelog-cli@5 \
+            -p conventional-changelog-conventionalcommits@8 \
+            conventional-changelog -p conventionalcommits -r 1 \
+            > release-notes.full.md
+
+          # Strip the leading "## [x.y.z] (date)" heading; keep body.
+          awk 'NR==1 && /^##/ {next} /^$/ && !printed {next} {printed=1; print}' \
+            release-notes.full.md > release-notes.md
+
+          if [[ ! -s release-notes.md ]]; then
+            echo "::warning::no Conventional Commits since last tag; falling back to git log."
+            if [[ -n "$LAST_TAG" ]]; then
+              git log --pretty=format:'- %s' "${LAST_TAG}..HEAD" > release-notes.md
+            else
+              echo "- Initial TestFlight build." > release-notes.md
+            fi
+          fi
+
+          echo "::group::Release notes (release-notes.md)"
+          cat release-notes.md
+          echo "::endgroup::"
+
+      # App Store Connect requires the iOS 26 SDK as of 2026-04;
+      # pin to the latest stable Xcode (Xcode 26.x on macos-15).
+      - name: Select latest-stable Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          rustup show
+
+      - name: Install Rust iOS device target
+        run: rustup target add aarch64-apple-ios
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "v0.8-rust"
+          shared-key: ios-release
+
+      # See `ios-build`: caching the built binary skips a from-source
+      # `cargo install` on macOS-rate minutes.
+      - name: Cache cargo-tauri binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: ${{ runner.os }}-cargo-tauri-v2
+
+      - name: Install tauri-cli
+        run: |
+          if ! command -v cargo-tauri >/dev/null; then
+            cargo install tauri-cli --version "^2.0" --locked
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: bun install
+        working-directory: crates/outl-mobile
+        run: bun install --frozen-lockfile
+
+      - name: Import Apple Distribution certificate
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PWD: ${{ secrets.MAC_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$P12_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PWD" \
+            "$KEYCHAIN_PATH" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychain -d user | sed -e 's/^ *//' -e 's/"//g')
+          rm -f "$CERT_PATH"
+
+      - name: Install provisioning profile
+        id: profile
+        env:
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          PROFILE_PATH="$PROFILE_DIR/outl-appstore.mobileprovision"
+          echo -n "$PROVISIONING_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$PROFILE_PLIST")
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$PROFILE_PLIST")
+          rm -f "$PROFILE_PLIST"
+          echo "name=$PROFILE_NAME" >> "$GITHUB_OUTPUT"
+          echo "uuid=$PROFILE_UUID" >> "$GITHUB_OUTPUT"
+          echo "::notice::Provisioning profile '$PROFILE_NAME' ($PROFILE_UUID) installed"
+
+      # See testflight.yml's "Patch xcodeproj for Manual signing" for
+      # the rationale (CI runners have no Apple ID, default
+      # `iPhone Developer` identity looks up Development profiles
+      # even when archiving for the App Store).
+      - name: Patch xcodeproj for Manual signing
+        env:
+          PROFILE_NAME: ${{ steps.profile.outputs.name }}
+          PROFILE_UUID: ${{ steps.profile.outputs.uuid }}
+        run: |
+          PBX="crates/outl-mobile/src-tauri/gen/apple/outl-mobile.xcodeproj/project.pbxproj"
+          REPLACEMENT="CODE_SIGN_IDENTITY = \"Apple Distribution\"; CODE_SIGN_STYLE = Manual; PROVISIONING_PROFILE_SPECIFIER = \"${PROFILE_NAME}\"; PROVISIONING_PROFILE = \"${PROFILE_UUID}\";"
+          python3 - "$PBX" "$REPLACEMENT" <<'PY'
+          import sys, pathlib
+          path = pathlib.Path(sys.argv[1])
+          replacement = sys.argv[2]
+          text = path.read_text()
+          needle = 'CODE_SIGN_IDENTITY = "iPhone Developer";'
+          if needle not in text:
+              print(f"::error::needle not found in {path}", file=sys.stderr)
+              sys.exit(1)
+          patched = text.replace(needle, replacement)
+          path.write_text(patched)
+          print(f"::notice::Patched {text.count(needle)} signing block(s) in pbxproj")
+          PY
+
+      # The app extensions (RFC 0363: widget, share) carry their own
+      # bundle ids, so they need their own App Store profiles. With every
+      # profile present each extension is signed with its own; with any
+      # missing, the extensions are unhooked from the app and the release
+      # still ships the app alone. See crates/outl-mobile/IOS-EXTENSIONS.md.
+      - name: Sign or unhook the iOS app extensions
+        id: ext_profiles
+        env:
+          OutlWidget_PROFILE_BASE64: ${{ secrets.WIDGET_PROVISIONING_PROFILE_BASE64 }}
+          OutlShare_PROFILE_BASE64: ${{ secrets.SHARE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          # No associative array here: the macOS runner's /bin/bash is
+          # 3.2, where `declare -A` is a parse error, not an unsupported
+          # option that degrades. It took the whole step down on line 4,
+          # before the unhook path below could ship the app alone — the
+          # exact fallback this step exists to provide. The target to
+          # bundle-id-suffix map is the `case` further down.
+          PBX="crates/outl-mobile/src-tauri/gen/apple/outl-mobile.xcodeproj/project.pbxproj"
+          SCRIPT="crates/outl-mobile/scripts/ios-extensions-signing.py"
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          PRESENT=()
+          for t in OutlWidget OutlShare; do
+            if grep -q "/\* $t \*/ = {" "$PBX"; then PRESENT+=("$t"); fi
+          done
+          MISSING=0
+          for t in "${PRESENT[@]}"; do
+            var="${t}_PROFILE_BASE64"
+            if [[ -z "${!var}" ]]; then MISSING=1; fi
+          done
+          EXTRA=""
+          if [[ ${#PRESENT[@]} -gt 0 && $MISSING -eq 1 ]]; then
+            echo "::warning::App extension profiles missing; shipping the app without its extensions"
+            python3 "$SCRIPT" strip "$PBX"
+          else
+            for t in "${PRESENT[@]}"; do
+              var="${t}_PROFILE_BASE64"
+              path="$PROFILE_DIR/outl-$t.mobileprovision"
+              echo -n "${!var}" | base64 --decode -o "$path"
+              plist="$RUNNER_TEMP/$t.plist"
+              security cms -D -i "$path" > "$plist"
+              name=$(/usr/libexec/PlistBuddy -c "Print :Name" "$plist")
+              uuid=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$plist")
+              rm -f "$plist"
+              python3 "$SCRIPT" sign "$PBX" "$t" "$name" "$uuid"
+              case "$t" in
+                OutlWidget) suffix=widget ;;
+                OutlShare) suffix=share ;;
+                *) echo "::error::no bundle-id suffix registered for $t"; exit 1 ;;
+              esac
+              EXTRA="$EXTRA<key>app.outl.mobile-app.${suffix}</key><string>$name</string>"
+            done
+          fi
+          echo "extra=$EXTRA" >> "$GITHUB_OUTPUT"
+
+      # `cargo tauri ios init` adds `libapp.a` to Resources alongside
+      # Frameworks; on Release archives the Resources copy step fails
+      # because the file lives under `arm64/release/` not the
+      # hardcoded `arm64/debug/`. Drop the Resources entry. See
+      # testflight.yml for the long explanation.
+      - name: Patch xcodeproj — strip libapp.a from Resources
+        run: |
+          PBX="crates/outl-mobile/src-tauri/gen/apple/outl-mobile.xcodeproj/project.pbxproj"
+          python3 - "$PBX" <<'PY'
+          import re, sys, pathlib
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+          m = re.search(
+              r'(\w+) /\* libapp\.a in Resources \*/ = '
+              r'\{isa = PBXBuildFile; fileRef = \w+ /\* libapp\.a \*/; \};',
+              text,
+          )
+          if not m:
+              print("::warning::libapp.a Resources entry not found; nothing to strip")
+              sys.exit(0)
+          bid = m.group(1)
+          pat_def = re.compile(
+              rf'\s*{bid} /\* libapp\.a in Resources \*/ = '
+              rf'\{{isa = PBXBuildFile; fileRef = \w+ /\* libapp\.a \*/; \}};\n'
+          )
+          text, n1 = pat_def.subn('', text)
+          pat_ref = re.compile(rf'\s*{bid} /\* libapp\.a in Resources \*/,\n')
+          text, n2 = pat_ref.subn('', text)
+          path.write_text(text)
+          print(f"::notice::Stripped libapp.a from Resources (def={n1}, ref={n2})")
+          PY
+
+      # The committed `project.pbxproj` carries Tauri's scaffold defaults
+      # `MARKETING_VERSION = 0.2.0;` and `CURRENT_PROJECT_VERSION = 0.2.0;`.
+      # Tauri's `--config "version"` only writes the Info.plist during
+      # the build; it does NOT touch the pbxproj. The downstream
+      # `xcodebuild -exportArchive` step then *regenerates* the
+      # archived app's Info.plist from those pbxproj keys while
+      # re-signing for distribution — silently overwriting the version
+      # we patched into the archive (and producing TestFlight uploads
+      # that all carry `CFBundleVersion = 0.5.3`, which Apple rejects
+      # as DUPLICATE on the second attempt).
+      #
+      # Fix: pin both keys in the pbxproj before the build, so every
+      # downstream step (xcodebuild archive, exportArchive, altool
+      # upload) reads the correct values straight from source.
+      - name: Patch xcodeproj — MARKETING_VERSION + CURRENT_PROJECT_VERSION
+        env:
+          SHORT_VERSION: ${{ steps.meta.outputs.short_version }}
+          BUILD_NUMBER: ${{ steps.meta.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          PBX="crates/outl-mobile/src-tauri/gen/apple/outl-mobile.xcodeproj/project.pbxproj"
+          # Capture before-state for the run log.
+          echo "::group::pbxproj version keys before patch"
+          grep -nE 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' "$PBX" || true
+          echo "::endgroup::"
+
+          # The keys can appear with or without quotes around the
+          # value (Xcode/Tauri are inconsistent across templates).
+          # Replace both shapes for every Debug/Release configuration.
+          sed -i.bak -E \
+            -e "s|(MARKETING_VERSION = )\"?[^;\"]*\"?;|\1${SHORT_VERSION};|g" \
+            -e "s|(CURRENT_PROJECT_VERSION = )\"?[^;\"]*\"?;|\1${BUILD_NUMBER};|g" \
+            "$PBX"
+          rm -f "$PBX.bak"
+
+          echo "::group::pbxproj version keys after patch"
+          grep -nE 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' "$PBX"
+          echo "::endgroup::"
+
+          # Sanity check: refuse to continue if patching produced
+          # nothing matching what we expect.
+          if ! grep -q "MARKETING_VERSION = ${SHORT_VERSION};" "$PBX"; then
+            echo "::error::MARKETING_VERSION patch did not land"; exit 1
+          fi
+          if ! grep -q "CURRENT_PROJECT_VERSION = ${BUILD_NUMBER};" "$PBX"; then
+            echo "::error::CURRENT_PROJECT_VERSION patch did not land"; exit 1
+          fi
+
+      # App Store Connect rejects marketing icons with alpha. The
+      # 1024x1024 icon ships with RGBA; composite over solid black
+      # and strip alpha. ImageMagick installs in ~20s from brew.
+      - name: Strip alpha from marketing icon
+        run: |
+          ICON="crates/outl-mobile/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png"
+          if [[ ! -f "$ICON" ]]; then
+            echo "::error::Marketing icon not found at $ICON"
+            exit 1
+          fi
+          if ! command -v magick >/dev/null; then
+            echo "Installing ImageMagick via brew..."
+            brew install --quiet imagemagick
+          fi
+          magick "$ICON" -background black -alpha remove -alpha off "$ICON"
+
+      # Version: `tauri.conf.json` intentionally omits the `version`
+      # field. The Tauri docs say it falls back to `Cargo.toml` in
+      # that case, but the iOS build path does NOT honor that fallback
+      # — it ships `1.0.0` instead. So we drive the version explicitly
+      # via `--config`, reading the workspace version from `Cargo.toml`
+      # ourselves (already computed by the `meta` step).
+      #
+      # `--config` accepts an inline JSON object that gets merged
+      # (RFC 7396) into the resolved Tauri config. Tauri then
+      # propagates this version to MARKETING_VERSION /
+      # CURRENT_PROJECT_VERSION in the pbxproj and to
+      # CFBundleShortVersionString in the generated Info.plist.
+      # CFBundleVersion (build number) is handled separately below in
+      # the post-archive plutil step — Tauri only exposes one version
+      # field.
+      - name: cargo tauri ios build (archive — export redone manually)
+        working-directory: crates/outl-mobile
+        env:
+          CI: "true"
+          # RFC 0377 conditions 1 and 2. The DSN is read by `option_env!` at
+          # compile time, so it has to be in cargo's environment here; an
+          # unset secret compiles to `None` and the reporter is a no-op, which
+          # is why no step gates on it. Repository secret, not an environment
+          # one — this job already has `environment: release` for the signing
+          # material, so it reaches both.
+          OUTL_SENTRY_DSN: ${{ secrets.OUTL_SENTRY_DSN_MOBILE }}
+        run: |
+          SHORT="${{ steps.meta.outputs.short_version }}"
+          EXPORT_RC=0
+          cargo tauri ios build \
+            --export-method app-store-connect \
+            --features sentry \
+            --config "{\"version\": \"$SHORT\"}" || EXPORT_RC=$?
+          ARCHIVE="src-tauri/gen/apple/build/outl-mobile_iOS.xcarchive"
+          if [[ ! -d "$ARCHIVE" ]]; then
+            echo "::error::Archive missing at $ARCHIVE — tauri build failed before archiving (rc=$EXPORT_RC)"
+            exit 1
+          fi
+          if [[ $EXPORT_RC -ne 0 ]]; then
+            echo "::notice::tauri export step exited with $EXPORT_RC — expected; redoing manually next."
+          fi
+
+      # Tauri propagates `tauri.conf.json.version` to both
+      # CFBundleShortVersionString and CFBundleVersion. For TestFlight
+      # we need them different (marketing "0.5.3" vs build "0.5.3047"),
+      # so override CFBundleVersion in TWO places:
+      #
+      #   1. The archived `.app`'s own Info.plist.
+      #   2. The archive's root `Info.plist` (the archive manifest),
+      #      under `ApplicationProperties.CFBundleVersion`.
+      #
+      # Why (2) matters: `xcodebuild -exportArchive` regenerates the
+      # app's Info.plist during re-signing from the archive manifest's
+      # `ApplicationProperties` block. Patching only (1) was silently
+      # reverted on export, every IPA shipped with the manifest's
+      # `0.5.3`, and TestFlight rejected the second upload with
+      # `ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE`.
+      #
+      # Confirmed locally via `scripts/local-testflight.sh`: with both
+      # patches the IPA carries the right CFBundleVersion.
+      - name: Patch archive CFBundleVersion (app + manifest)
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ steps.meta.outputs.build_number }}
+          SHORT_VERSION: ${{ steps.meta.outputs.short_version }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="crates/outl-mobile/src-tauri/gen/apple/build/outl-mobile_iOS.xcarchive"
+          APP_PLIST="$ARCHIVE/Products/Applications/outl.app/Info.plist"
+          MANIFEST_PLIST="$ARCHIVE/Info.plist"
+          for f in "$APP_PLIST" "$MANIFEST_PLIST"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error::expected plist not found: $f"
+              find "$ARCHIVE" -name "Info.plist" | head -10
+              exit 1
+            fi
+          done
+
+          echo "::group::app Info.plist before patch"
+          plutil -p "$APP_PLIST" | grep -E 'CFBundle(Version|ShortVersionString|Identifier|Name)'
+          echo "::endgroup::"
+          echo "::group::archive manifest Info.plist before patch"
+          plutil -p "$MANIFEST_PLIST" | grep -E 'CFBundle(Version|ShortVersionString)' || true
+          echo "::endgroup::"
+
+          plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$APP_PLIST"
+          plutil -replace ApplicationProperties.CFBundleVersion \
+            -string "$BUILD_NUMBER" "$MANIFEST_PLIST"
+
+          echo "::group::app Info.plist after patch"
+          plutil -p "$APP_PLIST" | grep -E 'CFBundle(Version|ShortVersionString|Identifier|Name)'
+          echo "::endgroup::"
+          echo "::group::archive manifest Info.plist after patch"
+          plutil -p "$MANIFEST_PLIST" | grep -E 'CFBundle(Version|ShortVersionString)'
+          echo "::endgroup::"
+
+          # Sanity: short_version should already match (Tauri's job).
+          ACTUAL_SHORT=$(plutil -extract CFBundleShortVersionString raw "$APP_PLIST")
+          if [[ "$ACTUAL_SHORT" != "$SHORT_VERSION" ]]; then
+            echo "::error::CFBundleShortVersionString in archive is '$ACTUAL_SHORT', expected '$SHORT_VERSION'."
+            exit 1
+          fi
+
+      - name: Write App Store ExportOptions.plist
+        id: export_opts
+        env:
+          PROFILE_NAME: ${{ steps.profile.outputs.name }}
+          EXTRA_PROFILES: ${{ steps.ext_profiles.outputs.extra }}
+        run: |
+          PLIST="$RUNNER_TEMP/ExportOptions-appstore.plist"
+          cat >"$PLIST" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>destination</key>
+              <string>export</string>
+              <key>teamID</key>
+              <string>CPEEKT3E77</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>app.outl.mobile-app</key>
+                  <string>${PROFILE_NAME}</string>
+                  ${EXTRA_PROFILES}
+              </dict>
+              <key>stripSwiftSymbols</key>
+              <true/>
+              <key>uploadSymbols</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$PLIST"
+          echo "path=$PLIST" >> "$GITHUB_OUTPUT"
+
+      - name: Export IPA from archive (manual signing)
+        run: |
+          ARCHIVE="crates/outl-mobile/src-tauri/gen/apple/build/outl-mobile_iOS.xcarchive"
+          EXPORT_DIR="crates/outl-mobile/src-tauri/gen/apple/build"
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE" \
+            -exportPath "$EXPORT_DIR" \
+            -exportOptionsPlist "${{ steps.export_opts.outputs.path }}"
+
+      - name: Locate built IPA
+        id: ipa
+        shell: bash
+        run: |
+          IPA="crates/outl-mobile/src-tauri/gen/apple/build/outl.ipa"
+          if [[ ! -f "$IPA" ]]; then
+            FOUND=$(find crates/outl-mobile/src-tauri/gen/apple/build -maxdepth 2 -name '*.ipa' | head -1)
+            if [[ -n "$FOUND" ]]; then
+              IPA="$FOUND"
+            else
+              echo "::error::No .ipa produced under gen/apple/build"
+              find crates/outl-mobile/src-tauri/gen/apple/build -maxdepth 3 -type f | head -40
+              exit 1
+            fi
+          fi
+          echo "path=$IPA" >> "$GITHUB_OUTPUT"
+          ls -lh "$IPA"
+
+      # End-to-end verification: the only thing that matters is what
+      # CFBundleVersion lands inside the actual .ipa, since that's
+      # what altool ships to Apple. Earlier patches (Info.plist of the
+      # archive, pbxproj) can all be silently undone by Tauri's build
+      # or xcodebuild's exportArchive; this step unzips the produced
+      # .ipa and refuses to continue unless the embedded Info.plist
+      # matches the build number we computed.
+      - name: Verify CFBundleVersion in built IPA
+        env:
+          EXPECTED_SHORT: ${{ steps.meta.outputs.short_version }}
+          EXPECTED_BUILD: ${{ steps.meta.outputs.build_number }}
+          IPA_PATH: ${{ steps.ipa.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/ipa-verify"
+          rm -rf "$WORK"
+          mkdir -p "$WORK"
+          unzip -q "$IPA_PATH" -d "$WORK"
+          APP_PLIST=$(find "$WORK/Payload" -maxdepth 2 -name 'Info.plist' | head -1)
+          if [[ -z "$APP_PLIST" ]]; then
+            echo "::error::No Info.plist inside IPA payload"
+            find "$WORK" -maxdepth 4 -type f | head -30
+            exit 1
+          fi
+          echo "::group::Embedded Info.plist (CFBundle keys)"
+          plutil -p "$APP_PLIST" | grep -E 'CFBundle(Version|ShortVersionString|Identifier|Name)'
+          echo "::endgroup::"
+
+          ACTUAL_SHORT=$(plutil -extract CFBundleShortVersionString raw "$APP_PLIST")
+          ACTUAL_BUILD=$(plutil -extract CFBundleVersion raw "$APP_PLIST")
+          if [[ "$ACTUAL_SHORT" != "$EXPECTED_SHORT" ]]; then
+            echo "::error::CFBundleShortVersionString in IPA is '$ACTUAL_SHORT', expected '$EXPECTED_SHORT'"
+            exit 1
+          fi
+          if [[ "$ACTUAL_BUILD" != "$EXPECTED_BUILD" ]]; then
+            echo "::error::CFBundleVersion in IPA is '$ACTUAL_BUILD', expected '$EXPECTED_BUILD'. Apple's duplicate guard will reject this upload — something between 'Patch archive CFBundleVersion' and 'Export IPA from archive' is regenerating the plist."
+            exit 1
+          fi
+          echo "::notice::IPA carries CFBundleVersion=$ACTUAL_BUILD as expected"
+
+      # The dSYMs exist because the release configuration in the generated
+      # `project.pbxproj` sets `DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"`,
+      # so `xcodebuild archive` writes `outl.app.dSYM` into the archive. They
+      # have never left this runner: `ExportOptions.plist` asks for
+      # `uploadSymbols: true` with `destination: export`, which sends them
+      # nowhere, and the artifact below carried only the IPA.
+      #
+      # Best-effort like the other upload steps — Sentry being down must not
+      # hold a TestFlight build — but it says so when nothing goes up, because
+      # the alternative is discovering it from an unreadable crash months on.
+      - name: Upload dSYMs to Sentry
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: outl
+          SENTRY_PROJECT: outl-mobile
+        run: |
+          set -uo pipefail
+          DSYMS="crates/outl-mobile/src-tauri/gen/apple/build/outl-mobile_iOS.xcarchive/dSYMs"
+          if [[ ! -d "$DSYMS" ]]; then
+            echo "::warning::no dSYMs directory in the archive at $DSYMS — check that the release config still sets DEBUG_INFORMATION_FORMAT = dwarf-with-dsym; nothing uploaded"
+            exit 0
+          fi
+          ls -la "$DSYMS"
+          if [[ -z "${SENTRY_AUTH_TOKEN}" ]]; then
+            note="SENTRY_AUTH_TOKEN is unset, so no dSYMs were uploaded. A crash from this build will arrive in Sentry as bare addresses. The dSYMs are still in the outl-ios-dsyms artifact for 30 days."
+            echo "::warning::${note}"
+            # A warning and not a failure on purpose: the Sentry
+            # projects and this secret are set up by hand, so until
+            # that happens every release would fail on a feature that
+            # is not configured yet. It reaches the summary page so
+            # the state is visible without reading a step log.
+            echo "- symbols: ${note}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 0
+          fi
+          if ! npx --yes @sentry/cli@3.8.0 debug-files upload "$DSYMS"; then
+            note="sentry-cli failed to upload the dSYMs; the build continues, and they remain in the outl-ios-dsyms artifact for 30 days if this needs redoing by hand"
+            echo "::warning::${note}"
+            # Stays a warning, and this is the branch the "a release
+            # must not wait on Sentry" argument actually covers.
+            echo "- symbols: ${note}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
+
+      - name: Write build metadata (consumed by TestFlight)
+        run: |
+          META_DIR="$RUNNER_TEMP/ipa-bundle"
+          mkdir -p "$META_DIR"
+          cp "${{ steps.ipa.outputs.path }}" "$META_DIR/outl.ipa"
+          # release-notes.md is required by testflight.yml's
+          # `Set TestFlight release notes` step. It was generated
+          # earlier in the job by the `Generate release notes` step.
+          if [[ -f release-notes.md ]]; then
+            cp release-notes.md "$META_DIR/release-notes.md"
+          else
+            echo "::warning::release-notes.md missing; TestFlight will skip whatsNew."
+          fi
+          cat >"$META_DIR/metadata.env" <<EOF
+          short_version=${{ steps.meta.outputs.short_version }}
+          build_number=${{ steps.meta.outputs.build_number }}
+          head_sha=${{ github.sha }}
+          EOF
+          ls -lh "$META_DIR"
+          echo "dir=$META_DIR" >> "$GITHUB_ENV"
+
+      # The artifact name is canonical (`outl-ios-release`). TestFlight
+      # downloads it by name from this run's artifacts when the
+      # workflow_run trigger fires.
+      - name: Upload signed IPA + metadata artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: outl-ios-release
+          path: ${{ env.dir }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # A second artifact, deliberately not folded into `outl-ios-release`.
+      # The archive dies with the runner, so without this the dSYMs exist
+      # nowhere once a best-effort upload fails — but `testflight.yml`
+      # downloads `outl-ios-release` whole, by name, on every ship, and
+      # debug info for a Rust binary is far larger than the IPA. Putting them
+      # in the same artifact would tax each TestFlight upload to keep a copy
+      # that upload never reads.
+      #
+      # `warn`, not `error`: the step above already warns when the archive has
+      # no dSYMs, and a missing debug companion must not fail a release.
+      - name: Upload dSYMs artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: outl-ios-dsyms
+          path: crates/outl-mobile/src-tauri/gen/apple/build/outl-mobile_iOS.xcarchive/dSYMs
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Same rule as the other published artifacts, read off the file that
+      # goes to Apple. Nothing in this job strips the app binary itself —
+      # `STRIP_INSTALLED_PRODUCT` during the archive and `stripSwiftSymbols`
+      # on export are what do, and neither is visible from here, which is
+      # exactly why this reads the IPA instead of asserting they ran.
+      #
+      # The debug map is the finding worth having: an unstripped Mach-O
+      # carries one entry per object file naming its path on this runner, so a
+      # failure here means both a fat binary and the runner's directory layout
+      # going to the App Store.
+      #
+      # Deliberately *after* the artifact upload. Failing here still blocks
+      # TestFlight (`testflight.yml` waits on this workflow succeeding), which
+      # is the point, but the IPA and its dSYMs stay downloadable so the
+      # failure can be inspected instead of rebuilt.
+      - name: Verify the IPA carries no debug info
+        run: python3 scripts/check-artifact-stripped.py "${{ steps.ipa.outputs.path }}"
+
+      - name: Cleanup signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/outl-appstore.mobileprovision"

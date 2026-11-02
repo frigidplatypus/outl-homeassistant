@@ -1,0 +1,247 @@
+//! `lisp` runtime — Scheme via [Steel](https://github.com/mattwparas/steel).
+//!
+//! Steel is a mature, embeddable Scheme dialect in pure Rust. We
+//! register `display` / `displayln` / `print` as native functions that
+//! funnel into our own buffer, run the source, and (if nothing was
+//! printed) auto-display the value of the last expression.
+//!
+//! Gated behind the `lang-lisp` feature, which is **not** in the
+//! default set. See [What a block may reach](#what-a-block-may-reach)
+//! for why: this runtime cannot be given a host boundary from outside
+//! Steel, so it is for builds that only run code the user wrote.
+//!
+//! # What a block may reach
+//!
+//! Everything, given a line or two. `Engine::new_sandboxed()` skips
+//! `steel/filesystem`, `steel/process`, `steel/tcp` and `steel/http`
+//! from the prelude, and `HOST_BINDINGS` below shadows the names that
+//! survive that. Neither is a boundary, and it is worth being precise
+//! about why so nobody tightens the list and calls it closed:
+//!
+//! - `new_sandboxed()` still registers the full `steel/meta` module
+//!   (steel 0.8.3 has a `SANDBOXED_META_MODULE` and never uses it), so a
+//!   fence has `Engine::new`, `run!`, `eval`, `eval-string`, `env-var`
+//!   and `set-env-var!`. `(run! (Engine::new) "(command ...)")` builds
+//!   an unsandboxed engine and runs a shell in it.
+//! - `steel/process` is registered whether or not the engine is
+//!   sandboxed; only the prelude `require` is skipped. The primitive is
+//!   still reachable as `#%prim.command`, and `(require-builtin
+//!   steel/process)` re-binds `command` over whatever we shadowed.
+//! - A `defmacro` or `begin-for-syntax` body runs in the compiler's
+//!   kernel engine, a second `Engine` with the process module loaded.
+//!   `Compiler.kernel` and `Kernel.engine` are `pub(crate)`, so an
+//!   embedder cannot reach it to shadow anything.
+//!
+//! An allowlist would need Steel to expose one, and it does not:
+//! `Engine::new_raw_no_kernel()` drops the prelude bootstrap along with
+//! the kernel, and the module registry has no public "these and only
+//! these" constructor. Until upstream offers that, the honest position
+//! is the feature flag: off by default, and on only in a build whose
+//! operator accepts that a `lisp` fence is as trusted as a shell.
+
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use steel::steel_vm::engine::Engine;
+use steel::steel_vm::register_fn::RegisterFn;
+use steel::SteelVal;
+
+use crate::runtime::{ExecContext, ExecError, ExecOutput, ExitStatus, OutputFormat, Runtime};
+use crate::sandbox::with_timeout;
+
+/// Steel-backed Scheme runtime.
+pub struct LispRuntime;
+
+impl Runtime for LispRuntime {
+    fn language(&self) -> &'static str {
+        "lisp"
+    }
+
+    /// Runs on a worker thread, so the caller is released on time and
+    /// the VM is not stopped.
+    ///
+    /// `Engine::with_interrupted` looks like the better answer and is
+    /// not: it takes an `Arc<AtomicBool>` that the VM **never reads** —
+    /// every occurrence of `interrupted` in the crate is a write.
+    ///
+    /// Steel does have a real cancellation point, through a different
+    /// door: `Engine::get_thread_state_controller()` hands back a
+    /// `ThreadStateController` whose `interrupt()` makes the VM stop at
+    /// the next instruction (`VmCore::safepoint_or_interrupt`). Moving
+    /// to it would upgrade `lisp` to a real abort, like `lua`. Not done
+    /// here because this change is already closing two holes, and
+    /// swapping the termination mechanism deserves its own test pass.
+    fn execute(&self, source: &str, ctx: &ExecContext<'_>) -> Result<ExecOutput, ExecError> {
+        let owned = source.to_string();
+        with_timeout(ctx.timeout, move || run_isolated(&owned))
+    }
+}
+
+fn run_isolated(source: &str) -> Result<ExecOutput, ExecError> {
+    let start = Instant::now();
+
+    let sink: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    // `new_sandboxed`, not `new`: `Engine::new` calls
+    // `register_builtin_modules(sandbox = false)`, which registers
+    // `steel/filesystem`, `steel/process`, `steel/tcp` and `steel/http`
+    // — and `ALL_MODULES` requires filesystem, ports and process into
+    // the global scope. A ```lisp fence had `command` (a shell),
+    // `open-output-file` and `tcp-connect`: the same hole issue #278
+    // closed in `lua`, in the runtime next door.
+    let mut engine = Engine::new_sandboxed();
+
+    // Override the printing builtins so output lands in our buffer
+    // instead of the host's real stdout. Steel still has the
+    // originals available under different names if user code asks,
+    // but `(display ...)` / `(displayln ...)` / `(print ...)` —
+    // the muscle-memory forms — go through us.
+    install_printers(&mut engine, sink.clone());
+    revoke_host_bindings(&mut engine);
+
+    match engine.run(source.to_string()) {
+        Ok(values) => {
+            let mut stdout = sink.lock().unwrap().clone();
+            if stdout.is_empty() {
+                if let Some(last) = values.last() {
+                    stdout.push_str(&steel_value_to_string(last));
+                }
+            }
+            Ok(ExecOutput {
+                stdout,
+                stderr: String::new(),
+                duration: start.elapsed(),
+                exit: ExitStatus::Ok,
+                format: OutputFormat::Text,
+            })
+        }
+        Err(e) => Ok(ExecOutput {
+            stdout: sink.lock().unwrap().clone(),
+            stderr: format!("{e}"),
+            duration: start.elapsed(),
+            exit: ExitStatus::Trap("steel-error".into()),
+            format: OutputFormat::Text,
+        }),
+    }
+}
+
+/// Host bindings that survive `Engine::new_sandboxed()` and are shadowed
+/// by hand.
+///
+/// **This is a denylist, it fails open, and it is not a security
+/// boundary.** It exists so the obvious spelling of each host call
+/// (`(command ...)`, `(open-output-file ...)`) traps instead of running,
+/// which is worth having in a trusted build: an honest mistake in your
+/// own fence should not delete a file. It does nothing against intent,
+/// because the same primitives stay reachable through `#%prim.command`,
+/// `(require-builtin steel/process)`, `(run! (Engine::new) ...)` and a
+/// `defmacro` body; the module doc lists each with the reason it cannot
+/// be closed from here. That is why `lang-lisp` is opt-in and not why
+/// this list is short.
+///
+/// `lisp_cannot_reach_the_host` pins each name so a Steel bump that
+/// renames one is noticed.
+const HOST_BINDINGS: &[&str] = &[
+    "command",
+    "spawn-process",
+    "wait",
+    "which",
+    "open-input-file",
+    "open-output-file",
+    "delete-file",
+    "create-directory!",
+    "read-dir",
+    "copy-directory-recursively!",
+    "tcp-connect",
+    "tcp-listen",
+    "with-env-var",
+];
+
+fn revoke_host_bindings(engine: &mut Engine) {
+    for name in HOST_BINDINGS {
+        engine.register_value(name, SteelVal::Void);
+    }
+}
+
+fn install_printers(engine: &mut Engine, sink: Arc<Mutex<String>>) {
+    let s1 = sink.clone();
+    engine.register_fn("display", move |v: SteelVal| {
+        s1.lock().unwrap().push_str(&steel_value_to_string(&v));
+    });
+    let s2 = sink.clone();
+    engine.register_fn("displayln", move |v: SteelVal| {
+        let mut s = s2.lock().unwrap();
+        s.push_str(&steel_value_to_string(&v));
+        s.push('\n');
+    });
+    let s3 = sink.clone();
+    engine.register_fn("print", move |v: SteelVal| {
+        s3.lock().unwrap().push_str(&steel_value_to_string(&v));
+    });
+    let s4 = sink.clone();
+    engine.register_fn("println", move |v: SteelVal| {
+        let mut s = s4.lock().unwrap();
+        s.push_str(&steel_value_to_string(&v));
+        s.push('\n');
+    });
+    let s5 = sink;
+    engine.register_fn("newline", move || {
+        s5.lock().unwrap().push('\n');
+    });
+}
+
+/// Render a Steel value the way you'd see it at a REPL.
+fn steel_value_to_string(v: &SteelVal) -> String {
+    match v {
+        SteelVal::StringV(s) => s.to_string(),
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(src: &str) -> String {
+        LispRuntime
+            .execute(src, &ExecContext::default())
+            .unwrap()
+            .stdout
+    }
+
+    #[test]
+    fn simple_addition() {
+        assert_eq!(run("(+ 1 2)"), "3");
+    }
+
+    #[test]
+    fn nested_arithmetic() {
+        assert_eq!(run("(* (+ 1 2) (- 10 4))"), "18");
+    }
+
+    #[test]
+    fn explicit_display() {
+        assert_eq!(run("(display \"hello\")"), "hello");
+    }
+
+    #[test]
+    fn displayln_appends_newline() {
+        assert_eq!(run("(displayln \"hi\")"), "hi\n");
+    }
+
+    #[test]
+    fn list_operations() {
+        // Real Scheme — `map`, lambda all work out of the box because
+        // it's Steel under the hood, not our own toy.
+        let out = run("(map (lambda (x) (* x x)) (list 1 2 3))");
+        assert!(out.contains("1") && out.contains("4") && out.contains("9"));
+    }
+
+    #[test]
+    fn syntax_error_returns_trap() {
+        let out = LispRuntime
+            .execute("(+ 1", &ExecContext::default())
+            .unwrap();
+        assert!(matches!(out.exit, ExitStatus::Trap(_)));
+        assert!(!out.stderr.is_empty());
+    }
+}

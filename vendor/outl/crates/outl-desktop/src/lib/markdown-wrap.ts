@@ -1,0 +1,143 @@
+/**
+ * Markdown-wrap helpers for the active block textarea.
+ *
+ * Called from `action-handlers.ts` when the user fires `WrapBold`,
+ * `WrapItalic`, etc. Wraps the current selection with the
+ * delimiter pair; with no selection, inserts the pair and parks
+ * the caret between the two halves so the user can start typing
+ * immediately.
+ *
+ * `document.activeElement` is the source of truth — we don't keep
+ * a Solid signal for "which textarea is active". The dispatcher
+ * fires when a textarea has focus (Insert mode), so by the time we
+ * land here the right element is already focused.
+ *
+ * Re-firing the `input` event matters: `<BlockRow />` binds
+ * `onInput={(e) => setDraft(e.currentTarget.value)}`, so a direct
+ * `ta.value = …` write bypasses the signal. Dispatching an `input`
+ * event keeps Solid in sync, and `commit()` on blur / Esc picks up
+ * the wrapped value as the new draft.
+ */
+
+import { cycleTodo } from "@outl/shared/outline";
+
+function activeTextarea(): HTMLTextAreaElement | null {
+  const el = document.activeElement;
+  return el instanceof HTMLTextAreaElement ? el : null;
+}
+
+function fireInputEvent(ta: HTMLTextAreaElement) {
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/**
+ * Wrap the current selection with `prefix` … `suffix`. With no
+ * selection, insert the pair and place the caret between them.
+ */
+export function wrapSelection(prefix: string, suffix: string = prefix) {
+  const ta = activeTextarea();
+  if (!ta) return;
+  const start = ta.selectionStart ?? 0;
+  const end = ta.selectionEnd ?? start;
+  const before = ta.value.slice(0, start);
+  const selected = ta.value.slice(start, end);
+  const after = ta.value.slice(end);
+
+  ta.value = `${before}${prefix}${selected}${suffix}${after}`;
+  fireInputEvent(ta);
+
+  if (selected.length === 0) {
+    // Park caret between the delimiters: `**|**`.
+    const caret = start + prefix.length;
+    ta.setSelectionRange(caret, caret);
+  } else {
+    // Keep the selection on the previously-selected text — the
+    // delimiters wrap around it.
+    ta.setSelectionRange(start + prefix.length, end + prefix.length);
+  }
+}
+
+/**
+ * Splice `text` into `ta` at the current caret (replacing any active
+ * selection), keep the Solid draft signal in sync via an `input` event,
+ * and park the caret just after the inserted text.
+ *
+ * Used by the file drag-drop path to drop an asset link into the block
+ * that is currently being edited — same "write value + fire input +
+ * reposition caret" contract as `wrapSelection`, so the in-flight draft
+ * is respected instead of racing a backend mutation.
+ */
+export function spliceTextAtCaret(ta: HTMLTextAreaElement, text: string) {
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? start;
+  const before = ta.value.slice(0, start);
+  const after = ta.value.slice(end);
+
+  ta.value = `${before}${text}${after}`;
+  fireInputEvent(ta);
+
+  const caret = start + text.length;
+  ta.setSelectionRange(caret, caret);
+  ta.focus();
+}
+
+/**
+ * Insert `[label](url)`. When the user has a selection, that text
+ * becomes the label and `url` is highlighted for them to type into.
+ * Otherwise we splice `[text](url)` and select `text` first — the
+ * user types the label, presses Tab to jump to `url`, and types
+ * the destination.
+ */
+export function insertLink() {
+  const ta = activeTextarea();
+  if (!ta) return;
+  const start = ta.selectionStart ?? 0;
+  const end = ta.selectionEnd ?? start;
+  const before = ta.value.slice(0, start);
+  const selected = ta.value.slice(start, end);
+  const after = ta.value.slice(end);
+
+  if (selected.length > 0) {
+    const url = "url";
+    ta.value = `${before}[${selected}](${url})${after}`;
+    fireInputEvent(ta);
+    const urlStart = start + 1 + selected.length + 2; // "[" + label + "]("
+    ta.setSelectionRange(urlStart, urlStart + url.length);
+  } else {
+    const placeholder = "text";
+    const url = "url";
+    ta.value = `${before}[${placeholder}](${url})${after}`;
+    fireInputEvent(ta);
+    const labelStart = start + 1; // after "["
+    ta.setSelectionRange(labelStart, labelStart + placeholder.length);
+  }
+}
+
+/**
+ * Cycle the focused textarea's TODO prefix in place.
+ *
+ * Returns `false` when no textarea has focus, so the caller can fall
+ * back to the backend round-trip for the not-editing case.
+ *
+ * Editing needs its own path: the textarea's draft signal is seeded
+ * once when editing starts and never re-syncs from `props.block`, so a
+ * toggle that went through the backend updated the outline behind a
+ * stale draft and the new state only appeared on leaving Insert. The
+ * TUI has always done it this way (`cycle_todo_inline` on the
+ * `EditBuffer`); the commit on blur persists whatever the draft holds.
+ */
+export function cycleTodoInDraft(): boolean {
+  const ta = activeTextarea();
+  if (!ta) return false;
+  const caret = ta.selectionStart ?? 0;
+  const before = ta.value;
+  const after = cycleTodo(before);
+  ta.value = after;
+  // Keep the caret over the same character of the user's own text:
+  // the prefix grew or shrank in front of it.
+  const shift = after.length - before.length;
+  const next = Math.max(0, caret + shift);
+  ta.setSelectionRange(next, next);
+  fireInputEvent(ta);
+  return true;
+}

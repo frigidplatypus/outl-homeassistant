@@ -1,0 +1,79 @@
+[package]
+name = "outl-exec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Code-block execution engine for outl: trait Runtime + sandbox + idempotent result subblock."
+
+[features]
+default = ["lang-js", "lang-python", "lang-lua", "lang-rust", "lang-query"]
+
+# Each language is its own feature so binaries can opt out (mobile,
+# embedded, "lisp-only" distributions, ...). Adding a new language is
+# one feature plus one runtime file in src/runtimes/.
+#
+# `lang-lisp` is deliberately NOT a default. Steel offers no allowlist
+# to build a host boundary from: `Engine::new_sandboxed()` still
+# registers the full `steel/meta` module, so a fence can build an
+# unsandboxed `(Engine::new)` and `run!` a shell through it, `steel/process`
+# stays reachable through `#%prim.command` and `(require-builtin
+# steel/process)`, and a `defmacro` body runs in the kernel engine an
+# embedder cannot touch. A fence body is not always written by the
+# person running it (iroh, `outl import`, an agent over MCP), so the
+# runtime is opt-in for builds that only run their own code. See
+# `src/runtimes/lisp.rs`.
+lang-lisp = ["dep:steel-core"]
+lang-js = ["dep:boa_engine"]
+lang-python = ["dep:rustpython-vm", "dep:rustpython-host_env"]
+lang-lua = ["dep:mlua"]
+# Rust support requires the wasmtime sandbox
+lang-rust = ["wasm"]
+# Query language — workspace queries (tasks, filters) as code blocks.
+# No external interpreter needed; runs against the in-process block index.
+lang-query = []
+# Generic WASM sandbox. Pulls in wasmtime; enable when the host wants
+# to load drop-in `.wasm` interpreters or use language runtimes that
+# need WASM (Rust today; Steel/QuickJS-wasi tomorrow).
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:dirs"]
+
+[dependencies]
+outl-core.workspace = true
+outl-md.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+# Language runtimes — pulled in via features. Each is a mature, embeddable
+# pure-Rust (or vendored-C) interpreter. The wasmtime sandbox below is
+# the *uniform* path; in-process runtimes are kept for fast iteration
+# and so users with no `rustup wasm32-wasip1` target still get Lisp/JS/
+# Python/Lua out of the box.
+steel-core = { version = "0.8", optional = true }
+boa_engine = { version = "0.22", optional = true }
+rustpython-vm = { version = "0.6", optional = true, default-features = false, features = ["compiler"] }
+mlua = { version = "0.12", optional = true, features = ["lua54", "vendored"] }
+
+# Source hashing (auto-run cache key, sidecar content hash). Used
+# unconditionally; cheap dep.
+sha2 = { workspace = true }
+
+# WASM sandbox stack (gated behind `wasm`). Workspace MSRV is rust 1.99.
+wasmtime = { version = "49.0.5", optional = true }
+wasmtime-wasi = { version = "49.0.5", optional = true }
+dirs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# rustpython-host_env 0.6.0 compiles its Windows `wmi` module unconditionally
+# but that module calls into `ctypes`, which only exists behind the `ctypes`
+# feature. rustpython-vm turns it on through `host_env`, which we leave off,
+# so enable it here on Windows only. libffi is built from source on MSVC.
+[target.'cfg(windows)'.dependencies]
+rustpython-host_env = { version = "0.6", optional = true, default-features = false, features = ["ctypes"] }

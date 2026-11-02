@@ -1,0 +1,237 @@
+---
+applyTo: "crates/**"
+---
+
+<!-- Mirror of docs/shared-primitives.md + docs/primitives-*.md, for Copilot review.
+     Both sides must change together — .claude/hooks/catalog-sync-guard.sh enforces it. -->
+
+# Shared primitives catalog
+
+The catalog is indexed at [`docs/shared-primitives.md`](../../docs/shared-primitives.md).
+Its rows live in [`primitives-core.md`](../../docs/primitives-core.md), [`primitives-markdown.md`](../../docs/primitives-markdown.md) and [`primitives-actions.md`](../../docs/primitives-actions.md); the index says which part owns what.
+Before approving a helper, grep all four (`docs/shared-primitives.md docs/primitives-*.md`) and scan the relevant sub-table.
+If the diff adds a primitive that overlaps with a catalog entry, it is a duplicate — block the PR and point at the existing function with `file:line`.
+
+**Review checklist on every PR that adds a helper:**
+
+- Does the new function name / signature describe something already in the catalog?
+  If yes → blocker, point at the existing one.
+- Does the PR add a `normalize`, `coerce`, `strip`, `slugify`, `hash`, `derive`, or `extract` helper without grepping the catalog first?
+  Ask: "did you check `<catalog entry>` before writing this?"
+- Does the new code create a page / write `.md` / mint a `NodeId` / build a `LogOp` outside the catalog primitives?
+  Block — that's how invariants drift.
+- Does the PR add a new `pub fn|struct|enum|const` in `crates/outl-{core,md,actions}/src/`?
+  The new symbol **must** appear in the Shared primitives catalog (the local `doc-sync-guard.sh` + `catalog-sync-guard.sh` hooks enforce this pre-merge; the same rule applies in review).
+
+Recently added — durability primitives.
+**Block any PR that reads a file it is about to write back with `read_to_string(..).unwrap_or_default()`.**
+That is the silent-page-wipe bug: a failed read parses as an empty AST, gets rendered, and atomically replaces a full page with nothing.
+
+| Intent | Use this | File |
+|---|---|---|
+| Read a `.md` you are about to mutate and write back — missing file → empty, **every other I/O error propagates** | `outl_md::atomic::read_for_rewrite` | `crates/outl-md/src/atomic.rs` |
+| Build one sidecar block entry — **the only way to build one** unless you're preserving an expanded `ref_handle`; keeps `content_hash`, `ref_handle` and the level-2 `text` derived from the same revision. A hand-rolled literal is how they end up describing different revisions | `outl_md::sidecar::SidecarBlock::from_text(id, line, indent, text)` | `crates/outl-md/src/sidecar/payload.rs` |
+| Sidecar format version — currently `2`. **Block any PR that bumps it for an additive field.** Feature detection is by field *presence*, never by version number; an already-shipped binary rejects a higher version, rebuilds the sidecar from scratch, and duplicates every block. Bump only when an existing field changes meaning or encoding. Never hardcode the integer in a `Sidecar` literal | `outl_md::sidecar::SIDECAR_VERSION` / `MIN_READABLE_SIDECAR_VERSION` | `crates/outl-md/src/sidecar/payload.rs` |
+| Low-level crash-safe write (prefer the `journal::write_md_atomic` wrapper) | `outl_md::atomic::write_atomic` | `crates/outl-md/src/atomic.rs` |
+| Path of a workspace's orphan log — **every `reconcile_md` call must pass this**, never `None`. One owner: `outl_ws`'s `Paths::at` derives from it | `outl_actions::sync::orphans_log_path` / `SyncEngine::orphans_log` | `crates/outl-actions/src/sync.rs` |
+
+Recently added — device identity.
+**Block any PR that reads the write actor from `<workspace>/.outl/config.toml`.**
+That file rides the file-sync surface (Syncthing / Dropbox / NFS / git all replicate `.outl/`), `flock(2)` is machine-local, so two devices reading one `actor_id` both append to one `ops-<actor>.jsonl` and lose ops with no error.
+
+| Intent | Use this | File |
+|---|---|---|
+| Resolve which actor this **device** writes as for a workspace (migration-safe; the only supported entry point for CLI / TUI / MCP / embedders) | `outl_ws::actor::resolve_device_actor` | `crates/outl-ws/src/actor.rs` |
+| Device-local actor store — per **workspace instance** (`actor_for_instance`, keyed by `WorkspaceId` **plus the canonical root path**, so a copied directory forks instead of sharing an op log, while a moved one keeps its actor) and device-wide (`device_actor`, the Tauri clients' `<dir>/actor`) | `outl_core::DeviceStore` (errors: `outl_core::DeviceError`) | `crates/outl-core/src/device/mod.rs` |
+| Stable fingerprint of one physical device — the claim marker that lets exactly one device adopt a legacy `config.toml` actor | `outl_core::MachineId` (via `DeviceStore::machine_id`) | `crates/outl-core/src/device/mod.rs` |
+| Directory holding this device's identity files (`$OUTL_DEVICE_DIR`, else `$XDG_CONFIG_HOME/outl`, else `~/.config/outl`) — **never** inside a workspace | `outl_core::device_dir` | `crates/outl-core/src/device/mod.rs` |
+| Whether an actor binding may be dropped — the **single owner** of that verdict, so a listing and a prune cannot disagree (root gone **and** its parent present **and** past the TTL; anything unreadable keeps the binding) | `outl_core::BindingVerdict`, `outl_core::ActorBinding`, `outl_core::STALE_BINDING_TTL` (via `DeviceStore::actor_bindings` / `stale_actor_bindings` / `prune_binding`) | `crates/outl-core/src/device/gc.rs` |
+| Device-store scratch files a killed writer left half-published (never bindings, never backed up) | `outl_core::STALE_SCRATCH_TTL` (via `DeviceStore::stale_scratch` / `prune_scratch`) | `crates/outl-core/src/device/gc.rs` |
+
+| Snapshot / restore a workspace locally (git-backed; the git dir lives **outside** the workspace, so no file transport replicates it and the user's own repo in that folder is never touched). Use `git_available`, never a raw `git` spawn | `outl_actions::backup::{init, snapshot, snapshot_best_effort, list, restore, repo_dir, git_available, is_initialized, BackupRepo, BackupEntry, BackupError}` + `outl_config::BackupCfg` | `crates/outl-actions/src/backup/` |
+| Wire a client up to periodic backups — one call, detached thread, interval floor read back out of git, never on the edit or quit path | `outl_actions::backup::{spawn_auto_pass, maybe_snapshot, STARTUP_DELAY}` | `crates/outl-actions/src/backup/auto.rs` |
+
+Also block any `reconcile_md(.., None)` outside a test.
+Matching level 3 trashes the blocks it can't place, and `outl-md`'s hard rule is that they are recorded in `orphans.log` first — passing `None` is how the desktop and mobile boot paths deleted silently.
+
+Recently added — bulk-delete volume guards (catalog: `docs/primitives-markdown.md` → "Reconcile & matching").
+**Block any new caller that turns matching orphans into `Move(node, TRASH_ROOT)` through the raw `match_blocks`.**
+Level 3 treats 1 orphan and 5,000 identically, so a `.md` that arrived truncated (iCloud placeholder, half-flushed write) empties a page as quietly as deleting one bullet.
+
+| Intent | Use this | File |
+|---|---|---|
+| Match blocks with the volume of the resulting deletion checked first — `Err` over the **whole** pass, never a shortened orphan list | `outl_md::matching::guard::match_blocks_guarded` → `MatchGuardError` | `crates/outl-md/src/matching/guard.rs` |
+| The thresholds (500 orphans absolute, 0.75 of the page, ratio off under 20 known blocks) and the explicit opt-out a caller wires to a user-facing `--force` | `outl_md::matching::guard::{OrphanGuard, OrphanVolume}` (`OrphanGuard::Disabled` is the escape hatch, reached by `outl reconcile --allow-bulk-delete`) | `crates/outl-md/src/matching/guard.rs` |
+| `reconcile_md` with an explicit orphan-volume policy — `reconcile_md` itself delegates here with `OrphanGuard::Enforced` | `outl_md::reconcile::reconcile_md_with_guard` | `crates/outl-md/src/reconcile.rs` |
+| Whether a sidecar's blocks can answer "does the log know this line" at all — `false` only for a pre-0.11 sidecar whose entries all carry `text: ""`; an empty verdict from a reference that cannot answer is not permission to write | `outl_md::unlogged::sidecar_can_answer` (re-exported `outl_actions::sidecar_can_answer`) | `crates/outl-md/src/unlogged.rs` |
+| **Can this sidecar vouch for the `.md` on disk**: the sidecar-capability gate every write path asks before the content checks, with `sidecar_can_answer` as one arm of it. **Not the whole verdict on its own**: it returns `true` for any answerable sidecar, even over text the log never saw, so a writer must still refuse when `content_lines_missing_from` returns a non-empty line and when `frontmatter_lines_missing_from` is non-zero (`journal::guard`'s `unlogged_content_error` / `frontmatter_loss_error` phrase both). **Flag a caller that gates on `sidecar_can_answer` alone**: that refuses a page with nothing to lose, which froze every fresh journal day ([#332](https://github.com/outlmd/outl/issues/332)) | `outl_md::unlogged::sidecar_can_vouch_for` (re-exported `outl_actions::sidecar_can_vouch_for`) | `crates/outl-md/src/unlogged.rs` |
+| How much content a `outl doctor --repair` pass would remove, measured **before** the write, plus the ceilings past which it needs `--force` | `crate::cmd::doctor::{RepairVolume, RepairScope}` | `crates/outl-cli/src/cmd/doctor/{repair,mod}.rs` |
+
+Recently added — recovering text an `Op::Edit` truncated (catalog: `docs/primitives-actions.md` §2, `docs/primitives-core.md` §1).
+**Block a second "diff the op history for a truncation" implementation** — `outl-cli`'s `recover` subcommand must call these, not re-walk `Workspace::block_text_history` itself.
+
+| Intent | Use this | File |
+|---|---|---|
+| Scan the tree for a block whose current text is a proper prefix of an earlier `Op::Edit` revision (truncated, and the dropped tail is still in the log) | `outl_actions::scan_truncated_blocks` → `TruncatedBlock` | `crates/outl-actions/src/recover.rs` |
+| Write a recovered revision back as a **new** `Op::Edit`; refuses when the block changed since the scan | `outl_actions::restore_truncated_block` | `crates/outl-actions/src/recover.rs` |
+| Every intermediate text a block held, replayed from **storage** (never the resident log / text cache, so a snapshot boot can't silently shorten it) | `outl_core::Workspace::block_text_history` | `crates/outl-core/src/workspace/text_history.rs` |
+| The same revisions carrying the `Hlc` + `ActorId` that produced each — the owner, of which `block_text_history` is the text-only projection | `outl_core::Workspace::block_revisions` → `TextRevision` | `crates/outl-core/src/workspace/text_history.rs` |
+| Every op naming a node, oldest first, read from **storage** for the same reason | `outl_core::Workspace::ops_for_node` | `crates/outl-core/src/workspace/text_history.rs` |
+
+Recently added — reading a **page's** history (catalog: `docs/primitives-actions.md` §5b).
+**Block a second opinion about what a page's history is** — every client calls these; none re-walks the op log itself.
+Two rules the module owns: a deleted block stays in its page's history (a history that omits deletions omits the change people came for), and a fold / snooze / `page-slug` write / no-op re-emit is not an event.
+**Never read `Move.old_parent` from storage** — `do_op` fills it on the copy that reaches the in-memory log while `Workspace::apply` persists the caller's original, so 99% of the stored `Move` ops in the reference workspace say `root`. Fold the parent trail from `Create.parent` / `Move.new_parent`.
+
+| Intent | Use this | File |
+|---|---|---|
+| Every change to a page, newest first (`total` is the count before `limit`, so a capped list never reads as complete) | `outl_actions::page_timeline` → `PageTimeline` | `crates/outl-actions/src/timeline.rs` |
+| Every change to one block, following it across pages | `outl_actions::block_timeline` | `crates/outl-actions/src/timeline.rs` |
+| Slug of the page hosting a node | `outl_actions::page_slug_of` | `crates/outl-actions/src/tree/traverse.rs` |
+| Every top-level deletion in the trash, with whether it can be restored | `outl_actions::trash::list` → `Vec<TrashEntry>` | `crates/outl-actions/src/trash.rs` |
+| Put a deleted block back where it was deleted from | `outl_actions::trash::restore` | `crates/outl-actions/src/trash.rs` |
+| Why a restore would refuse (single owner; `list` and `restore` both ask) | `outl_actions::trash::refusal_for` | `crates/outl-actions/src/trash.rs` |
+| The parent a node sat under just before it was trashed (folded from the log, never `Move.old_parent`) | `outl_actions::trash::parent_at_deletion` | `crates/outl-actions/src/trash.rs` |
+
+Recently added — check these before writing a parallel **table** helper (catalog: `docs/primitives-markdown.md` → "Parse / render", "View helpers", "Cross-runtime TS contracts"):
+
+| Intent | Use this | File |
+|---|---|---|
+| Read a block's text as a table (cells + per-column alignment); does a table start at this line | `outl_md::table::parse_table` / `table_span` / `is_delimiter_row` | `crates/outl-md/src/table.rs` |
+| Read it with every **cell tokenized**, for a client that renders from tokens (`BlockNode.table`) | `outl_md::table::tokenize_table` → `TableView` | `crates/outl-md/src/table.rs` |
+| Write a table back as canonical, column-padded markdown — where outl **creates** one (a tabular paste, the TUI grid), never to reformat what the user typed | `outl_md::table::render_table` | `crates/outl-md/src/table.rs` |
+| Split a row into cells (escape-aware), or resolve a cell for display (`\|` → `|`) | `outl_md::table::split_cells` / `unescape_cell` | `crates/outl-md/src/table.rs` |
+| Tab-separated clipboard text → a markdown table, and the owner of the "is this tabular" gate both runtimes answer from | `outl_md::table::tsv_to_markdown` / `from_delimited` | `crates/outl-md/src/table.rs` |
+| Does a payload carry structure the paste pipeline will act on (outline, markdown table, tabular)? | `outl_actions::paste::looks_structured` | `crates/outl-actions/src/paste/detect.rs` |
+| Render a block's `table` as an HTML `<table>`; convert a clipboard `<table>` to markdown; detect either in pasted text | `<MarkdownTable />` (`@outl/shared/markdown`), `tableElementToMarkdown` / `looksLikeTable` / `looksLikeTabular` (`@outl/shared/paste`) | `crates/outl-frontend-shared/src/markdown/MarkdownTable.tsx`; `crates/outl-frontend-shared/src/paste/table.ts` |
+
+**Block a second table parser.** A table is not a new block kind and has no `Op`: it is a block whose text carries the pipe rows, like a fence or a `> ` quote. A client that splits the pipes itself also has no tokenizer, so a cell's `[[ref]]` renders as literal text — read `BlockNode.table`.
+
+Capture from outside the app (RFC 0363) — catalog: `docs/primitives-actions.md` → "Capture from outside the app":
+
+| Intent | Use this | File |
+|---|---|---|
+| Write one capture into an inbox (create-temp, fsync, rename) | `outl_actions::capture::write_capture` | `crates/outl-actions/src/capture.rs` |
+| Share sheet text + URL → the one line that goes in. THE single owner; mirrored only in `SharedLine.swift` | `outl_actions::capture::shared_line` | `crates/outl-actions/src/capture.rs` |
+| **Land every waiting capture into the op log.** THE single owner of the drain loop; the per-capture step is a closure, because the Tauri clients lock per capture and the TUI does not | `outl_actions::capture::drain_captures` / `drain_capture_dir` | `crates/outl-actions/src/capture.rs` |
+| Which inbox: the one a mobile shell exported, or the workspace's `.outl/captures` | `outl_actions::capture::inbox_from_env` / `inbox_in_workspace` | `crates/outl-actions/src/capture.rs` |
+| The day a capture belongs to — when it was **made**, in the configured timezone | `outl_actions::capture::capture_day` | `crates/outl-actions/src/capture.rs` |
+| Drain on mount / foreground / native nudge, in a GUI client | `@outl/shared` `installForegroundRefresh` | `crates/outl-frontend-shared/src/capture/index.ts` |
+
+**Never append a capture to the op log from a second process.** A widget, a share target and `outl capture` all leave a file; the app turns it into ops (root `CLAUDE.md` invariant 7).
+
+Recently added — check these before writing a parallel reminder helper (catalog: `docs/primitives-actions.md` → "Reminders"):
+
+| Intent | Use this | File |
+|---|---|---|
+| **When does a `remind::` rule next fire?** — pure, clock-free, THE single owner. Never re-derive it in TS / Swift / an OS bridge | `outl_actions::next_fire_at` | `crates/outl-actions/src/reminders/schedule.rs` |
+| Every reminder in the workspace with its next fire resolved (tree-driven — the `.md` is projected asynchronously, so disk is stale right after authoring) | `outl_actions::scan_reminders` | `crates/outl-actions/src/reminders/scan.rs` |
+| Every node carrying a property key, without walking the tree | `outl_core::tree::Tree::nodes_with_property` | `crates/outl-core/src/tree/mod.rs` |
+| Parse a `remind::` value (permissive — a bad rule warns, never drops the block) | `outl_md::parse_remind` | `crates/outl-md/src/remind.rs` |
+| Silence a reminder across every device | `outl_actions::snooze` / `snooze_until` (`Op::SnoozeRemind`) | `crates/outl-actions/src/reminders/mod.rs` |
+| Deliver what came due + the device-local fired log. In `outl-actions` because every client delivers, the TUI included | `outl_actions::take_due` | `crates/outl-actions/src/reminders/fired.rs` |
+| Format "in 3h" / bucket a reminder list for a GUI | `@outl/shared` `formatNextFire` / `groupReminders` | `crates/outl-frontend-shared/src/api/commands.ts` |
+| What a reminder row says when its block has no text of its own, and the predicate that decides. One sentence for both GUI clients | `@outl/shared/reminders` `EMPTY_REMINDER_NOTICE` / `reminderHasText` | `crates/outl-frontend-shared/src/reminders/index.ts` |
+| Section a task list by page — one heading per page, in order of first appearance; never re-ranks. Both clients had their own copy and both folded only adjacent rows | `@outl/shared/tasks` `groupTasksByPage` | `crates/outl-frontend-shared/src/tasks/index.ts` |
+| What a search box lists for a query, and in what order (pages, tasks, blocks, actions; `>` narrows to actions). Chord-aware action rows stay in `outl-desktop` | `@outl/shared/palette` `paletteResults` / `sectionOf` | `crates/outl-frontend-shared/src/palette/index.ts` |
+| **Mark a block DONE outright** (cancels its rule). Not `cycle_todo` — the cycle is `TODO → DOING → DONE`, so from an unmarked block one press lands on `TODO` and arms the nag | `outl_actions::todo::set_todo` | `crates/outl-actions/src/todo.rs` |
+| Rank the workspace's property keys by use (what to suggest when the user adds a property) | `outl_actions::property::known_keys` | `crates/outl-actions/src/property.rs` |
+| Read a page's own `key:: value` pairs, structural keys filtered out | `outl_actions::property::page_properties` | `crates/outl-actions/src/property.rs` |
+| Decide whether a property key is the page model's book-keeping (`page-slug` / `page-kind` / `page-source` / `page-frontmatter`) rather than user metadata | `outl_actions::tree::is_page_model_key` | `crates/outl-actions/src/tree/props.rs` |
+| Cycle / split / read task state (`TODO ` / `DOING ` / `DONE ` text prefixes; `TodoState::prefix` owns the spelling and the widths differ) | `outl_actions::todo::cycle_todo` / `split_todo` / `TodoState` / `DOING_PREFIX` | `crates/outl-actions/src/todo.rs` |
+
+Recently added — check these before writing a parallel template helper (catalog: `docs/primitives-actions.md` → "Templates"):
+
+| Intent | Use this | File |
+|---|---|---|
+| Inject a `params` binding into a callable template's source (serde_json-escaped, language-canonicalized) | `outl_actions::inject_call_params` | `crates/outl-actions/src/template/call.rs` |
+| The template name invoked by a ` ```call:<name> ` fence | `outl_actions::call_target_name` | `crates/outl-actions/src/template/call.rs` |
+| Reserved template name for the daily journal auto-stamp | `outl_actions::JOURNAL_TEMPLATE_NAME` | `crates/outl-actions/src/template/mod.rs` |
+| Detect + parse a ` ```call:<name> ` block into `(name, params)` | `outl_actions::parse_call_invocation` | `crates/outl-actions/src/template/run.rs` |
+| Execute a callable template (shared by TUI `gx` + desktop exec) | `outl_actions::run_callable_block` | `crates/outl-actions/src/template/run.rs` |
+| Resolve the page node for a `template:: <name>` (first in tree order; `tracing::warn!` on a name collision, and `list_templates` flags `TemplateEntry.duplicate`) | `outl_actions::template::list::find_template_by_name` | `crates/outl-actions/src/template/list.rs` |
+| Derive a page/journal-root id from a slug (single owner — every creation path routes here so two paths converge on one root) | `outl_core::NodeId::from_slug` (wrapper `outl_actions::page::page_id_from_slug`) | `crates/outl-core/src/id.rs` |
+| Read / write the raw snapshot boot cache on disk (`<root>/.outl/snapshots/snap-<actor>.bin`, workspace-owned — NOT a `Storage` method; boot reads via `read_best_from_disk` which prefers this device's own snapshot but adopts a peer's when absent — Phase 2, local ops preserved by the per-actor delta replay; `save_snapshot` + background writer go via `write_to_disk`) | `outl_core::snapshot::read_from_disk` / `read_best_from_disk` / `write_to_disk` (`SnapshotBody`) | `crates/outl-core/src/snapshot.rs` |
+| Snapshot wire-format version — bump it in lockstep with any `SnapshotBody` or encoder change; `decode` rejects every version but this one, older and newer alike, and the caller falls back to full op-log replay (postcard since `4`, bincode through `3` — #207) | `outl_core::snapshot::SCHEMA_VERSION` | `crates/outl-core/src/snapshot.rs` |
+| **Which snapshots the boot cache may drop, and which it may not** — the single owner of that verdict. Asks *"can the selector ever choose this file again"*, never *"is this actor gone"*: an unpulled peer log and a dead actor are one observation (RFC 0211's trap), and a snapshot is never read by its own actor anyway | `outl_core::snapshot::gc::survey` → `outl_core::snapshot::gc::Survey` / `SnapshotEntry` / `SnapshotVerdict` | `crates/outl-core/src/snapshot/gc.rs` |
+| Drop what the survey proved droppable (`Superseded` — decodes, not ours, loses under the selector's own key; `Unusable` — read end to end and `decode` refused). Re-stats before unlinking, so a body a peer pull `rename`d in is refused | `outl_core::snapshot::gc::prune` / `prune_all` / `sweep` | `crates/outl-core/src/snapshot/gc.rs` |
+| Abandoned `snap-*.bin.tmp` past the TTL — a write that died mid-rename, not a cache the selector can reach | `outl_core::snapshot::gc::stale_tmp` / `prune_tmp` / `STALE_TMP_TTL` | `crates/outl-core/src/snapshot/gc.rs` |
+| Plan a log compaction (writes nothing) — single owner of "is this op inert?". Six conditions over the merged log in HLC order, because `Op::Create` is idempotent: in a trashed-then-restored pair the `Create` is the inert one and the `Move` does the work | `outl_core::storage::compact::plan_compaction` → `CompactPlan` / `CompactOptions` / `DEFAULT_HORIZON_MS` | `crates/outl-core/src/storage/compact/plan.rs` |
+| **Compose an `ops/` index-sidecar filename** from `(actor, scope, kind)` — the only thing that does. Dot-prefixed in every layout so it never rides the file-sync surface; per-page names carry the **slug**, not the actor (the actor-derived name gave every page shard of one actor the same index file) | `outl_core::storage::sidecar::path_for` / `file_name` | `crates/outl-core/src/storage/sidecar/mod.rs` |
+| The **complete** sidecar set for one `(actor, scope)`. Anything invalidating byte offsets — compaction is the live caller — asks for it rather than listing names it remembers; a sidecar the caller forgot is a stale offset, which is silent corruption | `outl_core::storage::sidecar::paths_for` / `remove_all` | `crates/outl-core/src/storage/sidecar/mod.rs` |
+| Temp-and-rename publishing for a sidecar, buffered at 256 KiB. The flush is `into_inner()`, **not** `Drop` — `Drop` flushes and discards the error, so ENOSPC on the last buffer would read as success on a path whose whole job is durability. `append_entry` stays unbuffered on purpose (one line per call, nothing to batch) | `outl_core::storage::sidecar::write_atomic` / `buffered` | `crates/outl-core/src/storage/sidecar/mod.rs` |
+| Single owner of "may this `ops/` cache file be collected". Verdicts `Live` / `Legacy` / `AbandonedScratch` / `Inconclusive`, and `verdict.reason()` carries the user-facing wording so no client writes its own. Asks *can the reader compose this name again*, never *does this actor still exist* | `outl_core::storage::sidecar::gc` | `crates/outl-core/src/storage/sidecar/gc/` |
+| Execute it for this device's file only — a peer's `ops-<actor>.jsonl` is that device's own log and file transports are last-write-wins per path; narrow with `CompactPlan::restricted_to`, anything else is `CompactError::ForeignActorFile` | `outl_core::storage::compact::apply_compaction_as` | `crates/outl-core/src/storage/compact/rewrite.rs` |
+| Execute it — exclusive `.outl/.lock` + every actor's write lock, backup+fsync to `.outl/compact-backup/<ts>/` first, temp + `rename`, `.idx` sidecars deleted rather than rebuilt | `outl_core::storage::compact::apply_compaction` → `CompactReport` / `ActorSaving` / `CompactError` | `crates/outl-core/src/storage/compact/rewrite.rs` |
+| Repair a split-brain workspace where a slug has >1 root (re-parents children under the canonical root, trashes duplicates; all `Op`s; idempotent) | `outl_actions::merge_duplicate_slug_roots` (impl `outl_actions::page_merge`) | `crates/outl-actions/src/page_merge.rs` |
+| Create sibling before a block, appending at page end when the anchor is stale (`O` / new-block-above; the stale-anchor counterpart of `create_after_or_append`) | `outl_actions::block::create_before_or_append` | `crates/outl-actions/src/block/siblings.rs` |
+| Repair journal titles doubled by concurrent offline creation (two devices minted the same deterministic root and each wrote the slug into the root's Yrs text, concatenating into `"2026-06-252026-06-25"`; clears the text via `Op::Edit`; idempotent, journal-only) | `outl_actions::repair_doubled_journal_titles` (impl `outl_actions::page_repair_titles`) | `crates/outl-actions/src/page_repair_titles.rs` |
+| Order a backlinks list chronologically (group-stable by source page, newest-/oldest-first; drives the issue-#142 direction toggle on every client — never re-sort backlinks by hand per client) | `outl_actions::sort_backlinks` | `crates/outl-actions/src/backlinks_sort.rs` |
+| Give an ingested page back the namespaced `title::` it never got (issue 275). `outl_actions::namespace` reads the hierarchy off the title, and a page that arrived as a `.md` has none — so the nested-pages section rendered empty on an imported graph. The namespaced names are still spelled in the **mentions** (`[[buser/tech/data]]`), and `slugify` maps them onto exactly the slug the ingested page carries, so the repair is a join, not a guess. Idempotent; refuses a page that already has a title, a slug two spellings claim (reported in `ambiguous`), and every journal. Measured on a real 2,575-page workspace: 1 → 100 nested pages, 175 titles recovered, 3 ambiguities reported | `outl_actions::repair_namespaced_titles` → `NamespaceTitleRepair` | `crates/outl-actions/src/page_repair_namespaces.rs` |
+| Split a page's backlinks by **how they reached it**: the blocks that name it, and the blocks that only mention a descendant (`#os/linux` arriving at `os`). The second set has no natural size — `buser` names 448 sources and collects 3,221 more — so a client renders it as its own collapsed section and caps what it ships. A block doing both belongs to `direct` | `outl_actions::BacklinkIndex::for_page_split` → `SplitBacklinks` | `crates/outl-actions/src/backlinks_index.rs` |
+| Every page nested under a namespaced title — `os` → `os/linux`, `os/linux/debian` — title-sorted, each row carrying its `depth` (1 = direct child) and `label` (the trailing segment). **Derived from the `title`, never the slug**: `slugify` folds `/` to `-` because a slug is one path component, so the `/` a user typed survives only in the title. Comparison is per-segment and slugified, so `OS/Linux` matches `os` and `oscar/wilde` does not | `outl_actions::namespace_descendants` (`namespace::descendants`) | `crates/outl-actions/src/namespace.rs` |
+| Split a namespaced name into segments, or into its proper ancestors (`os/linux/debian` → `["os", "os/linux"]`). The ancestor list is what the backlink index indexes a namespaced mention under, so `#os/linux` reaches the `os` page | `outl_actions::namespace::{segments, key, ancestors}` | `crates/outl-actions/src/namespace.rs` |
+| One nested-page row on the wire (`{ page, depth, label }`), shared by the TUI section, the desktop / mobile `<NestedPages />`, and `PageBacklinks.namespace_children` | `outl_actions::NamespaceChild` | `crates/outl-actions/src/namespace.rs` |
+| Resolve the page/journal slug a node sits under (walks up to a registered page root; `None` if unregistered or not yet materialized) | `outl_core::Workspace::slug_for_node` | `crates/outl-core/src/workspace.rs` |
+| Batch a composite action so its ops persist in one `append_ops` per destination instead of one fsync per `apply` (RAII guard, derefs to `Workspace`; commit or drop flushes; nests via a depth counter) | `outl_core::Workspace::begin_batch` → `outl_core::WorkspaceBatch` | `crates/outl-core/src/workspace/batch.rs` |
+| Live sync-progress update pushed while a sync pass runs (connecting / snapshot bytes / ops received-pushed / synced / failed) — cosmetic only, distinct from the load-bearing reload trigger | `outl_actions::SyncProgress` + `SyncTransport::set_progress_sink` (default no-op) | `crates/outl-actions/src/sync.rs` |
+| Backlink DTO's ancestor breadcrumb — `Backlink::ancestors: Vec<BacklinkCrumb>` (root-first, excludes the page root, empty when the citing block is at root level) | `outl_actions::Backlink` / `outl_actions::BacklinkCrumb` | `crates/outl-actions/src/backlinks.rs` |
+| Pre-computed inverted backlinks index — build once (`O(blocks)`, off the input path) then look a page's backlinks up in `O(refs)` instead of re-scanning the workspace on every navigation (`for_page` / `for_target` / `count_for_page` / `len` / `is_empty`); `backlinks_for_page` / `backlinks_for_target` are now one-shot wrappers over this | `outl_actions::BacklinkIndex` | `crates/outl-actions/src/backlinks_index.rs` |
+| Build the backlinks index from the `.md` files on disk (client-facing builder — no `Workspace` touched, no lock held, `Send`); `build_backlink_index` (from an in-memory `Workspace`) is for the one-shot wrappers only — building a client's index from the workspace forces a lazy-boot vault (#179) to materialize and holds the workspace lock across the walk | `outl_actions::build_backlink_index_from_disk` | `crates/outl-actions/src/backlinks_index.rs` |
+| Derive the `WorkspaceIndex` from the op-log tree (CLI + MCP only; never on a path holding a client's workspace mutex, it materializes every block's text) | `outl_actions::index::derive` | `crates/outl-actions/src/index.rs` |
+| Pick the canonical page root for a slug when split-brain left several | `outl_actions::page::canonical_root_for_slug` | `crates/outl-actions/src/page.rs` |
+| Toggle the `pinned::` page property (already an `Op::SetProp`, converges via the op log); refuses journal pages | `outl_actions::page::toggle_pin` | `crates/outl-actions/src/page.rs` |
+| Import an **external** `.md` / `.txt` the OS handed a client ("Open With → outl") as a page under the `open-in/` namespace — `read_source` (refusals), `resolve_target` (the internal `page-source::` lookup, kept out of the `.md` that makes re-opening navigate instead of duplicating), `import_into` (create + `paste_markdown` + link from today's journal) | `outl_actions::open_with::{read_source, resolve_target, import_into, OpenWithTarget}` | `crates/outl-actions/src/open_with.rs` |
+| Build the `parent -> children` map once for a whole-workspace projection you are walking by hand (`index::derive`, `build_backlink_index`). **`walk_subtree` / `project_outline` / `render_page_md` no longer need it** — they build a scoped one themselves | `outl_actions::build_children_index` | `crates/outl-actions/src/backlinks_index.rs` |
+| Scoped `parent -> children` index for one subtree — one `iter_nodes` scan per level of *depth*, not per *node*. **Prefer it over the whole-workspace map for anything per-page**: the global map costs ~5 ms at 64k nodes and a page walk cannot amortize it, making it slower than the quadratic it replaces | `outl_actions::tree::children_index` | `crates/outl-actions/src/tree/children.rs` |
+| The `(position, then NodeId)` sibling total order — single owner, convergence-critical (tied `Fractional`s were `HashMap`-iteration-dependent before this branch) | `outl_actions::tree::sort_siblings` | `crates/outl-actions/src/tree/children.rs` |
+| Classify every page's `.md` against the op log (read-only selector for the `tree → .md` direction); `SidecarCannotAnswer` is its own state, not ordinary staleness | `outl_actions::journal::survey_page_projections` → `PageProjection` / `PageProjectionState` | `crates/outl-actions/src/journal/survey/mod.rs` |
+| Re-project every page whose rewrite removes nothing from disk; a page that would remove content is withheld for `outl doctor --repair` (backup + ceilings). Run by `outl serve`, not by `serve --no-watch` | `outl_actions::journal::reproject_stale_pages` → `ReprojectionSweep` / `WithheldPage` / `UnreadablePage` | `crates/outl-actions/src/journal/survey/sweep.rs` |
+| Run a page mutation **and the four steps that go around it** — pre-mutation undo snapshot, backlink-index invalidation, peer announce, `.md` + sidecar projection — in the one order that is correct. Takes `&mut Workspace` and a `CommitHooks` impl, so the TUI and the CLI can run it, not only the Tauri clients. Reach for this instead of calling `apply_page_md_with_sidecar_guarded` directly; a bare call is only right when you can name which of the other steps you are skipping and why | `outl_actions::commit_page` + `outl_actions::CommitHooks` | `crates/outl-actions/src/commit.rs` |
+| Project a page after a **mutation** without deleting content the op log never saw — the post-mutation counterpart to `_if_stale`, which only guards read paths. Every GUI write path routes through it (`ProjectionWriter`, block move, template instantiate); refusing returns `PageMarkdownAheadOfLog` and the edit stays safe in the op log. The CLI/MCP write paths route through it too (RFC 0255) | `outl_actions::apply_page_md_with_sidecar_guarded` | `crates/outl-actions/src/journal/apply.rs` |
+| Decide whether re-projecting a `.md` would delete content the op log never saw — multiset of content lines, whitespace-insensitive. **The** owner of that verdict, so the doctor's read-only listing and `--repair` cannot disagree. Owned by `outl-md` (also `reconcile_md`'s own producer-side check, invariant 8); `outl_actions::content_lines_missing_from` is a re-export. See [RFC 0210](../../docs/rfcs/0210-md-content-outside-op-log.md) | `outl_md::unlogged::content_lines_missing_from` | `crates/outl-md/src/unlogged.rs` |
+| The same verdict from block **texts** alone — byte-identical result, for a caller whose reference is a render rather than a sidecar (the `tree → .md` survey). Avoids minting a throwaway `NodeId` + content hash per block on every sweep | `outl_md::unlogged::content_lines_missing_from_texts` | `crates/outl-md/src/unlogged.rs` |
+| Would writing this render over this `.md` delete the page's YAML frontmatter fence? The **second channel** of the same "does the log know this" question — the fence rides `Op::SetProp`, so a block list cannot answer for it and `content_lines_missing_from` skips it. Narrow on purpose: a *differing* fence is a peer edit, not a loss | `outl_md::unlogged::frontmatter_lines_missing_from` | `crates/outl-md/src/unlogged.rs` |
+| Split a leading `---` YAML frontmatter fence off a `.md` body, **plus the number of source lines it occupied** — what `parse` needs to keep `ParseWarning::line` file-relative | `outl_md::frontmatter::split_frontmatter_counted` | `crates/outl-md/src/frontmatter.rs` |
+| How many leading lines a well-formed `---` fence occupies (`0` when there is none) — allocation-free, for a caller that only needs to skip the region | `outl_md::frontmatter::frontmatter_line_count` | `crates/outl-md/src/frontmatter.rs` |
+| Render a frontmatter body back to its fenced form (the inverse of `split_frontmatter`; a `...` closer normalizes to `---`) | `outl_md::frontmatter::render_frontmatter` | `crates/outl-md/src/frontmatter.rs` |
+| The page-property key that carries a page's verbatim frontmatter through the **op log** (`Op::SetProp` on the page root), so a projection from the tree re-emits the fence instead of deleting it — issue #281 | `outl_md::frontmatter::PAGE_FRONTMATTER_KEY` | `crates/outl-md/src/frontmatter.rs` |
+| Parse a markdown **fragment** (clipboard text, a pasted subtree) where a leading `---` is content, not page metadata — `parse` would split it off as frontmatter | `outl_md::parse::parse_fragment` | `crates/outl-md/src/parse.rs` |
+| Split a comma-separated page-property value (`alias::`, and the template `params::` list) into trimmed, non-empty entries — never hand-roll a second comma splitter | `outl_md::parse_alias_list` | `crates/outl-md/src/index.rs` |
+| The recovery command for `ActionError::PageMarkdownAheadOfLog`, as one constant so the variant's `Display`, `outl doctor`'s listing, and the MCP's structured refusal can't quote three spellings of the same command | `outl_actions::error::AHEAD_OF_LOG_RECOVERY_COMMAND` | `crates/outl-actions/src/error.rs` |
+| Per-surface catalog of which write-refusal (today: `PageMarkdownAheadOfLog`) is explained on which of five surfaces (TUI/Desktop/Mobile/CLI/MCP) — exhaustive `match` mirroring `outl_shortcuts::support`, deliberately its own type rather than an extension of `Client` (three members, outline-drawing clients only). Generates `docs/clients.md`'s refusal table (RFC 0255) | `outl_actions::refusal::{Refusal, Surface, Support, SurfaceSupport, refusal_support}` | `crates/outl-actions/src/refusal.rs` |
+| Split a block at a character offset (Enter mid-text): head stays in the block, tail becomes a new sibling right after it, children stay with the head | `outl_actions::block::split_block` | `crates/outl-actions/src/block/split.rs` |
+| Insert a sibling after a path, seeded with text (the TUI's in-flight block-split: tail of the split goes into the new sibling) | `outline_ops::insert_sibling_after_with_text` | `crates/outl-md/src/outline_ops.rs` |
+| Resolve the markdown link `[text](url)` under a caret position (anchor OR url) — the URL a client opens externally (TUI `gx` opens it in the browser when the block isn't code) | `outl_md::inline::link_at_cursor` → `Option<&str>` | `crates/outl-md/src/cursor.rs` |
+| Does a text mention `#tag` as a whole tag token? Boundary-correct via the tokenizer (`#tag-longer` / `#tagged` / `#tag/sub` never match `tag`; `#tag` inside a code span is not a tag) — never use `text.contains("#tag")` | `outl_md::tag::text_contains_tag` | `crates/outl-md/src/tag.rs` |
+| Same question, case-insensitive and answering for namespace children (`#ops/deploy` matches `ops`, `#opsec` does not). The ` ```query ` DSL's `tag:` / `not-tag:` — the boundary is what lets a **negative** filter be trusted (`not-tag: work` must not swallow `#workflow`) | `outl_md::tag::text_contains_tag_or_child` | `crates/outl-md/src/tag.rs` |
+| Project a **parsed** subtree (`.md` AST, no sidecar) into wire `OutlineNode`s with `tokens` attached — ids are **transient** (fresh per call), for read-only surfaces that re-resolve on navigation (the `!((blk))` embed subtree expansion) | `outl_actions::outline::project_parsed_subtree` (re-exported `outl_actions::project_parsed_subtree`) | `crates/outl-actions/src/outline.rs` |
+| Content-hash an uploaded file's bytes / build its workspace-relative link target / test whether a link points at a workspace asset / test whether a name is a safe asset basename (anti-traversal, the one owner the P2P transport validates peer-sent names through) — all pure, no filesystem | `outl_md::hash_bytes` / `outl_md::asset_rel_path` / `outl_md::is_asset_link` / `outl_md::is_safe_asset_name` (+ `outl_md::ASSETS_DIR`) | `crates/outl-md/src/asset.rs` |
+| Copy an uploaded file into `<root>/assets/<hash>.<ext>` (content-addressed, atomic, size-capped by `[assets] max_bytes`; `import_asset_bytes` takes already-in-memory bytes for a remote image downloaded during a Roam import) and resolve a `[name](assets/…)` link back to an on-disk path (traversal-safe) — the bytes never enter the op log, only the link does | `outl_actions::import_asset` / `outl_actions::import_asset_bytes` / `outl_actions::resolve_asset_path` | `crates/outl-actions/src/asset.rs` |
+
+Recently added — ingesting an op written by someone else's clock (catalog: `docs/primitives-core.md` §1).
+**Block any PR that calls `HlcGenerator::observe` on an op that arrived from outside this device without gating it first.**
+`observe` is monotonic, so one op from the year 584 million raises the local clock and *keeps* it there; every op the device writes afterwards is past its peers' own skew gate and gets dropped by them, silently and permanently.
+Two ingestors exist (`outl-sync-iroh`'s `ingest_received_ops`, `outl-plugins`' `PluginHost::sync_pull`); a third must be a third **caller** of the gate, never a third copy of it.
+
+| Intent | Use this | File |
+|---|---|---|
+| Is this op's timestamp too far in the future to trust? Returns how far past `MAX_CLOCK_SKEW_MS` it sits (for the caller's `warn!`), `None` to accept. **Call it before `observe`** | `outl_core::hlc::skew_ahead_ms(ts, now_ms)` + `outl_core::hlc::MAX_CLOCK_SKEW_MS` | `crates/outl-core/src/hlc.rs` |
+| Local wall clock in epoch ms, `None` before the epoch — the fallible form a ceiling-deciding caller needs (`0` would drop every op as 55 years ahead) | `outl_core::hlc::wall_clock_ms_checked()` | `crates/outl-core/src/hlc.rs` |
+
+Frontend shared primitives (`@outl/shared`) — canonical home is [`crates/outl-frontend-shared/CLAUDE.md`](../../crates/outl-frontend-shared/CLAUDE.md) → "Today's surface"; the embed / block-ref pieces the desktop wires for issue #147:
+
+| Intent | Use this | File |
+|---|---|---|
+| Render inline markdown tokens to JSX; the `blockref` token (`((blk))` / `!((blk))`) resolves to the source block's text when `embeds` carries the handle (orphan = raw chip); `variant` picks the ref/tag style (`pill` chips vs `inline` TUI-style text) and `blockAssets` decides whether an image may render as a block `<img>` (defaults to `variant !== "inline"`, so compact contexts keep a chip; the desktop's main `BlockRow` passes `variant="inline" blockAssets`) | `<MarkdownInline variant? blockAssets? embeds? />` (`@outl/shared/markdown`) | `crates/outl-frontend-shared/src/markdown/MarkdownInline.tsx` |
+| Render an embed's subtree read-only — `↳`-nested, max depth 4 (mirrors the TUI's `emit_embedded_children`) | `<EmbeddedSubtree />` (`@outl/shared/markdown`) | `crates/outl-frontend-shared/src/markdown/EmbeddedSubtree.tsx` |
+| The reply shape of `resolveEmbeds` (`{ handle, text, page_slug, status, children: BlockNode[] }`); `EmbedMap` is `Record<string, ResolvedBlock>` | `ResolvedBlock` (`@outl/shared/api/types`) | `crates/outl-frontend-shared/src/api/types.ts` |
+| The handle **iff** a block is embed-only (a bare `!((blk))`), so a client knows to render `<EmbeddedSubtree />` below it | `embedOnlyHandle(tokens)` (`@outl/shared/outline`) | `crates/outl-frontend-shared/src/outline/index.ts` |
+| Collect every blockref + embed handle in an outline (DFS) so a client resolves them in one `resolveEmbeds` round-trip | `collectBlockRefHandles(outline)` (`@outl/shared/outline`) | `crates/outl-frontend-shared/src/outline/index.ts` |
+| Every block id a Visual/selection range covers, DFS visible order, top first — what every range op (indent, outdent, move, yank, delete) walks, on **both** GUI clients. Returns `null` when an endpoint left the outline; that guard is the point, since `indexOf` gives `-1` and `slice(-1, …)` is the last block of the page rather than nothing. Was four inline copies (three desktop, one mobile) and three of them omitted the guard | `visibleRangeSlice(anchor, cursor, outline)` (`@outl/shared/outline`) | `crates/outl-frontend-shared/src/outline/index.ts` |
+| Wire the Tauri webview's OS file drag-drop to a block-resolved handler; desktop and mobile both consume this so the drop geometry (physical→CSS pixels, `data-block-id` hit-test) can't drift | `installFileDrop(handlers)`, `physicalToCss`, `blockIdFromElement` / `blockIdAtPhysical`, `joinAssetMarkdowns`, `appendMarkdownToBlock` (`@outl/shared/drag-drop`) | `crates/outl-frontend-shared/src/drag-drop/index.ts` |
+| Import a dropped file **without** creating a block, returning the ready-to-insert markdown link for the caller to splice at the drop target | `importAssetFile(sourcePath) → Promise<ImportedAsset>` (`@outl/shared/api/commands`) | `crates/outl-frontend-shared/src/api/commands.ts`; backend `import_asset_file` wraps `outl_actions::import_asset` |
+| Render the "Nested pages" list — every page under the open page's namespace, indented by `depth`, one click opens it. Pure: the hierarchy arrives decided from `outl_actions::namespace`, so no client splits a title on `/` | `<NestedPages children= … onOpen= … />` (`@outl/shared/namespace`) | `crates/outl-frontend-shared/src/namespace/NestedPages.tsx` |
+| Detect whether pasted plain text looks like an outline / a markdown table / tab-separated data; convert a textarea's UTF-16 `selectionStart` to a codepoint offset before splicing (no Rust mirror — a supplementary-plane char otherwise shifts the splice) | `looksLikeOutline` / `looksLikeTable` / `looksLikeTabular` / `utf16OffsetToCharOffset` (`@outl/shared/paste`) | `crates/outl-frontend-shared/src/paste/index.ts`; the three detectors mirror `outl_actions::paste::looks_like_outline` / `looks_like_table` / `looks_like_tabular` |
+| Write a `Palette` onto `<html>` as `--color-outl-*` CSS custom properties plus `<body>` background/foreground and `color-scheme` | `applyPaletteToRoot` (`@outl/shared/theme`) | `crates/outl-frontend-shared/src/theme/palette.ts`; its `color-scheme` pick uses a hand-synced `isLightHex` copy of `outl_theme::Palette::is_light()` (`crates/outl-theme/src/palette.rs`) — a method can't cross the Tauri wire, so two implementations by design |
+| Detect a `[[` / `((` autocomplete trigger under the caret + the accept/insert helpers; auto-pair `(`/`[`/`{` and step over an auto-inserted closer (wired via `onBeforeInput` since iOS soft keyboards skip per-char `keydown`) | `detectRefContext`, `autoClose/DeletePair`, `insertPair/Text`, `applySuggestion`, `autoPairBracket` (`@outl/shared/autocomplete`) | `crates/outl-frontend-shared/src/autocomplete/index.ts`; mirrors `outl_tui::actions::overlay::detect_trigger` + `outl_tui::input::insert` |

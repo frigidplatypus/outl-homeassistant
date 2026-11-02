@@ -1,0 +1,66 @@
+# A headless outl peer. See docs/self-hosting.md for the walkthrough —
+# in particular, this box has to JOIN your graph, never host the pairing.
+#
+#   docker compose build
+#   docker compose run --rm outl peer pair --ticket <ticket from your laptop>
+#   docker compose up -d
+#
+services:
+  outl:
+    build: .
+    image: outl-server:local
+    # This file builds from the source you cloned. To run a prebuilt image
+    # instead — no clone, no toolchain — follow the quick start in
+    # docs/self-hosting.md, which has a compose file you can paste.
+    #
+    #   image: ghcr.io/outlmd/outl-server:dev           # tip of main
+    #   image: ghcr.io/outlmd/outl-server:sha-a1b2c3d   # pinned, never moves
+    #   image: ghcr.io/outlmd/outl-server:latest        # newest stable release
+    #   image: ghcr.io/outlmd/outl-server:1.2           # newest 1.2.x
+    #
+    # Only the first two exist today: the image started being published after
+    # the last release, so `:latest` and the version tags are the naming
+    # scheme rather than something on the registry. `:latest` will follow the
+    # highest stable tag, never a pre-release. Pin `:sha-…` if you would
+    # rather choose your own upgrade moments.
+    container_name: outl
+    restart: unless-stopped
+
+    # iroh binds an OS-assigned UDP port and reaches peers by hole punching,
+    # falling back to a relay. There is no port to publish, which is why this
+    # file has no `ports:` — and why host networking is the recommended mode
+    # on Linux: Docker's bridge NAT rewrites the source port, so the address
+    # the peer is told to dial back is not the one packets leave from, and
+    # every connection ends up pinned to the relay.
+    #
+    # On Docker Desktop (macOS / Windows) host networking behaves differently;
+    # comment this out there and accept relayed connections.
+    network_mode: host
+
+    volumes:
+      # Your notes. Replicated to every paired device; safe to back up.
+      - outl-data:/data
+      # This device's identity: the iroh key (which IS the node id every peer
+      # has stored) and the actor bindings. Lose it and the container comes
+      # back as a NEW device — unpaired, and writing under a fresh actor.
+      # Back this one up too.
+      - outl-state:/home/outl
+
+    # `outl serve` runs both halves by default: the file watcher (so `.md`
+    # dropped into /data becomes ops) and the sync supervisor (so paired
+    # peers converge). Add `--no-watch` if nothing but sync should run here.
+    # command: ["serve", "--no-watch"]
+
+    environment:
+      # `info` names each peer sync pass and each reconcile. `outl=debug` if
+      # you are diagnosing a pairing that will not connect.
+      RUST_LOG: info
+
+    # The daemon releases its endpoint lease on SIGTERM, and a lease left
+    # held locks every outl process on this device out of an endpoint. Give
+    # it room to finish rather than being killed at the 10s default.
+    stop_grace_period: 30s
+
+volumes:
+  outl-data:
+  outl-state:

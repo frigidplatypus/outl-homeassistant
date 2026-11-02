@@ -1,0 +1,279 @@
+/* Baseline motion, reading rhythm and focus mode for @outl/shared/polish.
+   Every animation is short (under 200ms) and only touches opacity and
+   transform, so it never reflows the outline. A reader who asked for
+   less motion gets the end state with no transition at all. */
+:root {
+  --outl-motion-fast: 120ms;
+  --outl-motion-base: 180ms;
+  --outl-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Long reading. Line height and measure, not colour: body text uses
+     `fg`, which clears 4.5:1 on every preset (pinned in polish.test.ts). */
+  --outl-read-leading: 1.6;
+  --outl-read-measure: 68ch;
+  --outl-read-block-gap: 2px;
+  /* Block text and its edit textarea, on both clients. One value so a
+     row does not jump when it enters edit mode, and so desktop and
+     mobile rows share one rhythm (the size differs, the ratio does not). */
+  --outl-block-leading: 1.5;
+
+  /* How far the crash-reporting strip sits off the bottom edge. The
+     default clears a desktop window, whose bottom is free (its chrome
+     capsules and batch toolbar are all `top-3`). Mobile overrides it in
+     its own `styles.css` to clear the floating `BottomBar`, which the
+     shared stylesheet has no way to know about. Not a colour, so
+     invariant 13 does not apply — `--outl-read-measure` above is the
+     same kind of knob. */
+  --outl-notice-offset: 16px;
+
+  /* How much room a scrolling region leaves at its bottom so the
+     crash-reporting strip does not sit on top of the last rows.
+     Zero by default: the strip is dismissed for good on most devices,
+     and reserving space for something that is not there is dead space
+     on every page. `:root:has()` below turns it on only while the
+     strip is actually mounted. */
+  --outl-notice-clearance: 0px;
+
+  /* How much page stays on screen beyond the keyboard cursor, the way
+     vim's `scrolloff` does. Without it `scrollIntoView` scrolls the
+     minimum and parks the row flush against the edge, clipped, with
+     nothing after it — so moving down reads as "the scroll is not
+     following" even though it is. */
+  --outl-cursor-room: 4rem;
+}
+
+/* The strip is `position: fixed`, so the content behind it keeps
+   scrolling underneath. On a short page that is invisible — the window
+   bottom really is free, which is what the offset comment above
+   assumed. On a page long enough to scroll it is not: the last rows end
+   up behind the card, and a keyboard cursor can park there too, since
+   `scrollIntoView({block:"nearest"})` stops at the container edge and
+   knows nothing about a fixed overlay.
+   The height is a constant because CSS cannot measure the card; it
+   covers the three-line copy the strip ships with, plus its offset. */
+:root:has(.outl-crash-notice) {
+  --outl-notice-clearance: 6rem;
+}
+
+
+/* Put this on a scrolling region the keyboard moves a cursor through.
+   It does two jobs, both about the edges:
+
+   - keeps `--outl-cursor-room` of context past the cursor, so a row
+     scrolled into view is never the last thing visible;
+   - adds the strip's clearance at the bottom, so neither the cursor
+     nor the final rows can end up behind a `position: fixed` card. */
+.outl-cursor-room {
+  padding-bottom: calc(var(--outl-notice-clearance) + var(--outl-read-block-gap, 0px));
+}
+
+/* Declared on the ROWS rather than as `scroll-padding` on the scrolling
+   region. Both express the same thing and either would be defensible;
+   `scroll-margin` on the element `scrollIntoView` is called with is the
+   form with the least room for disagreement between engines. */
+.outl-cursor-room [data-block-id] {
+  scroll-margin-block: var(--outl-cursor-room)
+    calc(var(--outl-cursor-room) + var(--outl-notice-clearance));
+}
+
+/* Children of a block that was just unfolded slide in from the bullet. */
+.outl-unfold {
+  animation: outl-unfold var(--outl-motion-base) var(--outl-ease-out);
+  transform-origin: top left;
+}
+@keyframes outl-unfold {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Drag: the block under the pointer eases into its drop ring instead
+   of snapping, so the target reads while the pointer is still moving. */
+.outl-row {
+  transition:
+    background-color var(--outl-motion-fast) ease,
+    box-shadow var(--outl-motion-fast) ease;
+}
+
+/* The sync dot settles with one soft pulse when a pass finishes. */
+.outl-sync-settle {
+  animation: outl-sync-settle 420ms var(--outl-ease-out);
+}
+@keyframes outl-sync-settle {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  60% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/* Reading rhythm, applied to the outline column on both clients. */
+.outl-reading {
+  line-height: var(--outl-read-leading);
+  font-feature-settings: "kern", "liga", "calt";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: proportional-nums;
+}
+.outl-reading .outl-row {
+  padding-top: var(--outl-read-block-gap);
+  padding-bottom: var(--outl-read-block-gap);
+}
+
+/* Focus mode: the chrome steps out, the text gets a reading measure. */
+/* The chrome only fades, it never goes away: on a touch screen there is
+   no hover to bring it back, and the way out of focus mode lives in it. */
+html[data-outl-focus="on"] .outl-focus-hide {
+  opacity: 0.18;
+  transition: opacity var(--outl-motion-base) ease;
+}
+html[data-outl-focus="on"] .outl-focus-hide:hover,
+html[data-outl-focus="on"] .outl-focus-hide:focus-within,
+html[data-outl-focus="on"] .outl-focus-hide:active {
+  opacity: 1;
+}
+html[data-outl-focus="on"] .outl-reading {
+  max-width: var(--outl-read-measure);
+  margin-left: auto;
+  margin-right: auto;
+  font-size: 1.0625em;
+}
+html[data-outl-focus="on"] .outl-row:not(:focus-within):not([data-editing="true"]) {
+  opacity: 0.55;
+  transition: opacity var(--outl-motion-base) ease;
+}
+
+/* First-run tips card, shared by both empty states. */
+.outl-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 22rem;
+  margin: 0 auto;
+  padding: 16px;
+  border: 1px solid var(--color-outl-border);
+  border-radius: 14px;
+  background: var(--color-outl-bg-elev);
+  text-align: left;
+  animation: outl-unfold var(--outl-motion-base) var(--outl-ease-out);
+}
+.outl-tips h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-outl-fg);
+}
+.outl-tip {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-outl-fg);
+}
+.outl-tip-glyph {
+  color: var(--color-outl-accent);
+  font-weight: 600;
+  text-align: center;
+}
+.outl-tip kbd,
+.outl-tip code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-outl-fg) 10%, transparent);
+  font-size: 12px;
+}
+.outl-tips-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.outl-tips-actions button {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.outl-tips-primary {
+  background: var(--color-outl-accent);
+  color: var(--color-outl-accent-fg);
+}
+.outl-tips-secondary {
+  color: var(--color-outl-fg-dim);
+}
+
+/* The first-run crash-reporting strip (RFC 0377 section 6).
+
+   Bottom, not top: the top of both clients is chrome, and a strip that
+   covers the first bullet fails `UX.md` principle 6 in spirit even
+   though the caret still works. The positioned wrapper takes no pointer
+   events and the card takes them back, so the strip can never swallow a
+   click meant for the outline underneath — the desktop `ErrorToast`
+   construction.
+
+   `z-index: 40` puts it over mobile's `BottomBar` (30) and the
+   desktop's toolbars (20, 30), and under every sheet and overlay (50+),
+   so opening Settings to act on it covers it rather than fighting it. */
+.outl-crash-notice {
+  position: fixed;
+  inset-inline: 0;
+  bottom: var(--outl-notice-offset);
+  z-index: 40;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px;
+  /* The wrapper spans the viewport; only the card is a pointer target. */
+  pointer-events: none;
+}
+.outl-crash-notice__card {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 34rem;
+  padding: 10px 12px;
+  border: 1px solid var(--color-outl-border);
+  border-radius: 12px;
+  background: var(--color-outl-bg-elev);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-outl-fg) 12%, transparent);
+  animation: outl-unfold var(--outl-motion-base) var(--outl-ease-out);
+}
+.outl-crash-notice__body {
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-outl-fg);
+}
+.outl-crash-notice__dismiss {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-outl-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .outl-unfold,
+  .outl-sync-settle,
+  .outl-tips,
+  .outl-crash-notice__card {
+    animation: none;
+  }
+  .outl-row,
+  html[data-outl-focus="on"] .outl-focus-hide,
+  html[data-outl-focus="on"] .outl-row {
+    transition: none;
+  }
+}

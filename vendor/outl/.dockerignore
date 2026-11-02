@@ -1,0 +1,35 @@
+# Build output — never ship the host's target/ into the build context.
+target/
+**/target/
+.dev-device-store/
+
+# JS/TS — the desktop and mobile frontends are not part of the `outl` binary.
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+
+# Local state and scratch
+.git/
+.tmp/
+.crush/
+.outl/
+playground/
+note-example/
+*.tar.gz
+*.tgz
+
+# Editor / tooling caches
+.ruff_cache/
+.lsp/
+.clj-kondo/
+.DS_Store
+
+# Docs and packaging that the build does not read
+docs/
+assets/
+Formula/
+Casks/
+extensions/

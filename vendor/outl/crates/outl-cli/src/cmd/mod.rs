@@ -1,0 +1,37 @@
+//! Subcommand handlers for the `outl` binary.
+
+pub mod asset;
+pub mod backlinks;
+pub mod backup;
+pub mod batch;
+pub mod block;
+pub mod block_print;
+pub mod block_prop;
+pub mod capture;
+pub mod compact;
+pub mod daily;
+pub mod doctor;
+pub mod export;
+pub mod export_v2;
+pub mod history;
+pub mod import;
+pub mod init;
+pub mod migrate_to_per_page_ops;
+pub mod page;
+pub mod peer_qr;
+pub mod plugin;
+pub mod plugin_init;
+pub mod plugin_source;
+pub mod prop;
+pub mod query;
+pub mod reconcile;
+pub mod recover;
+pub mod search;
+pub mod serve;
+pub mod sync_supervisor;
+pub mod tag;
+pub mod telemetry;
+pub mod template;
+pub mod theme;
+pub mod trash;
+pub mod workspace_info;

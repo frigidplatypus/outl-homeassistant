@@ -1,0 +1,216 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/outl-core",
+    "crates/outl-md",
+    "crates/outl-actions",
+    "crates/outl-sync-iroh",
+    "crates/outl-config",
+    "crates/outl-exec",
+    "crates/outl-import",
+    "crates/outl-plugins",
+    "crates/outl-shortcuts",
+    "crates/outl-telemetry",
+    "crates/outl-theme",
+    "crates/outl-tauri-shared",
+    "crates/outl-ws",
+    "crates/outl-cli",
+    "crates/outl-tui",
+    "crates/outl-mobile/src-tauri",
+    "crates/outl-desktop/src-tauri",
+    "xtask",
+    "crates/outl-server",
+]
+
+[workspace.package]
+version = "0.13.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT"
+authors = ["Avelino <avelinorun@gmail.com>"]
+repository = "https://github.com/outlmd/outl"
+homepage = "https://outl.app"
+readme = "README.md"
+
+[workspace.dependencies]
+# Internal crates
+outl-core = { path = "crates/outl-core", version = "0.13.0" }
+outl-md = { path = "crates/outl-md", version = "0.13.0" }
+outl-actions = { path = "crates/outl-actions", version = "0.13.0" }
+outl-sync-iroh = { path = "crates/outl-sync-iroh", version = "0.13.0" }
+outl-config = { path = "crates/outl-config", version = "0.13.0" }
+outl-import = { path = "crates/outl-import", version = "0.13.0" }
+# Defaults OFF at the workspace level: `outl-actions` (published to crates.io)
+# and `outl-tauri-shared` must not smuggle wasmtime into the mobile IPA via
+# feature unification, and a crate manifest can't *disable* an inherited
+# default. Binaries that want the full runtime catalog (CLI / TUI / desktop)
+# set `default-features = true` on their side.
+outl-exec = { path = "crates/outl-exec", version = "0.13.0", default-features = false }
+outl-plugins = { path = "crates/outl-plugins", version = "0.13.0" }
+outl-shortcuts = { path = "crates/outl-shortcuts", version = "0.13.0" }
+outl-telemetry = { path = "crates/outl-telemetry", version = "0.13.0" }
+outl-theme = { path = "crates/outl-theme", version = "0.13.0" }
+outl-tauri-shared = { path = "crates/outl-tauri-shared", version = "0.13.0" }
+outl-ws = { path = "crates/outl-ws", version = "0.13.0" }
+outl-tui = { path = "crates/outl-tui", version = "0.13.0" }
+
+# IDs and time
+ulid = { version = "3", features = ["serde"] }
+
+# OS keychain for per-plugin secrets (`ctx.secrets`). Native stores on macOS /
+# Windows; on Linux the Secret Service via `async-secret-service` (zbus, pure
+# Rust) + `crypto-rust` — NOT `sync-secret-service`, which pulls the C
+# `libdbus-sys` and needs `libdbus-1-dev` on every Linux build (CI has none).
+# `async-io` gives the blocking wrapper its reactor; the keyring API stays sync.
+keyring = { version = "3", default-features = false, features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "crypto-rust",
+    "async-io",
+] }
+# Hidden-input prompt for `outl plugin secret set` (never echo a token).
+rpassword = "7"
+
+# Versioning (plugin api/engine semver ranges)
+semver = { version = "1", features = ["serde"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+toml = "1.1"
+# Compact binary serialization for snapshots (see docs/storage.md → Snapshots).
+# postcard, not bincode: every bincode version is flagged unmaintained by
+# RUSTSEC-2025-0141, and `outl-core` is published for embedding — a downstream
+# `cargo deny` / `cargo audit` gate fails on the advisory no matter which
+# bincode we pin (issue #207). `default-features = false` drops `heapless`;
+# `use-std` is what the alloc-backed `BTreeMap` / `String` fields need.
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# CRDT
+yrs = "0.27"
+
+# P2P sync (iroh)
+# `default-features` stays ON: iroh 1.0.0 ships its TLS backend (tls-ring) and
+# the n0 discovery stack behind the default feature set. Disabling it strips
+# TLS and the endpoint fails to bind. There is no `discovery-n0` feature in
+# 1.0.0 — discovery presets live in `iroh::endpoint::presets`.
+#
+# `platform-verifier` pulls in `rustls-platform-verifier` so we can delegate
+# relay-TLS validation to the OS keychain via `CaTlsConfig::system()` (see
+# `outl-sync-iroh/src/bind.rs`). Without it iroh's default
+# `CaTlsConfig::EmbeddedWebPki` (Mozilla's bundled roots) rejects any relay cert
+# issued by a custom root CA installed in the OS keychain — e.g. a corporate
+# TLS-inspection proxy — with `invalid peer certificate: UnknownIssuer`, even
+# though macOS / curl / Safari trust it fine. Enabling the feature is NOT enough
+# on its own: `system()` must be passed explicitly (default stays EmbeddedWebPki).
+iroh = { version = "1.0.0", features = ["platform-verifier"] }
+iroh-gossip = "0.101.0"
+# LAN-local peer discovery (issue #149). Attached POST-bind and fail-soft, not
+# through `Builder::address_lookup` — see `outl-sync-iroh/src/bind.rs`.
+iroh-mdns-address-lookup = "0.6"
+
+# Markdown
+comrak = { version = "0.52", default-features = false }
+emojis = "0.9"
+# NFC before slugifying a page name. The slug decides the page's NodeId,
+# so one name spelled two ways (macOS hands back NFD, a Korean IME
+# composes Hangul out of jamo) would otherwise mint two pages.
+unicode-normalization = "0.1"
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+unicode-width = "0.2"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Filesystem
+notify = "8"
+notify-debouncer-full = "0.7"
+walkdir = "2"
+fs2 = "0.4"
+
+# Concurrency
+parking_lot = "0.12"
+lru = "0.18"
+
+# Misc
+sha2 = "0.11"
+hex = "0.4"
+# Normalized Levenshtein for level-2 block matching in `outl-md`
+# (`.md` edited outside outl → recover the block's id from its old
+# text). MIT, no transitive deps, and already in the lock via clap.
+strsim = "0.11"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+# IANA timezone database — resolves a configured zone name ("Europe/London")
+# to the correct UTC offset per date (DST-aware), for `outl_actions::clock`.
+chrono-tz = "0.10"
+dirs = "7"
+# Path / identifier scrubber in `outl-telemetry`: the one predicate deciding
+# what a panic message may carry off the user's machine. Already in the lock
+# via `tauri-utils`, and `sentry-backtrace` depends on it too — declared here
+# anyway, because a safety predicate should not ride a transitive edge that
+# some other crate's refactor can remove.
+regex = "1"
+
+# Crash reporting (RFC 0377). `default-features = false` is load-bearing, not
+# tidiness: the default feature set is `transport = ["reqwest", "native-tls"]`,
+# and `native-tls` on Android resolves `openssl` + `openssl-sys` +
+# `tokio-native-tls` — none of which are in `Cargo.lock` and none of which
+# cross-compile without an NDK OpenSSL.
+#
+# `rustls`, NOT `rustls-no-provider`: `outl-plugins` and `outl-import` already
+# declare `reqwest = { features = ["blocking", "rustls"] }`, and features are
+# additive — asking for the no-provider variant here would leave reqwest with
+# two different crypto-provider stories in one build.
+#
+# `debug-images` is what lets the server resolve an address back to a function
+# name. Deliberately NOT enabled: `contexts` (it fills `server_name` from the
+# machine's hostname), `logs`, `metrics`, `release-health`, `tracing`.
+sentry = { version = "0.49.3", default-features = false, features = [
+    "panic",
+    "backtrace",
+    "reqwest",
+    "rustls",
+    "debug-images",
+] }
+
+# Tauri clients (desktop + mobile src-tauri)
+log = "0.4"
+rustls = { version = "0.23", features = ["ring"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-os = "2"
+
+# Dev
+proptest = "1"
+tempfile = "3"
+libc = "0.2"
+# Test-only: backdating a file's mtime is the only way to exercise a TTL
+# without sleeping through it (`outl-core`'s device-store GC).
+filetime = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# `strip = "symbols"` used to live here and is gone on purpose (RFC 0377 §5).
+# A crash report from a stripped binary arrives as a list of bare addresses
+# instead of function names, which is the same as no crash report at all.
+#
+# So the release profile keeps line tables, and the *pipeline* strips the
+# artifact after `sentry-cli debug-files upload` has read the symbols. Putting
+# the strip back here silently un-symbolicates every event we receive.
+debug = "line-tables-only"
+split-debuginfo = "packed"

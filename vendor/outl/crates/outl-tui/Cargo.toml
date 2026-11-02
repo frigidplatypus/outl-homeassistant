@@ -1,0 +1,94 @@
+[package]
+name = "outl-tui"
+description = "Terminal UI for the outl outliner."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "outl-tui"
+path = "src/main.rs"
+
+[dependencies]
+outl-core = { workspace = true }
+outl-md = { workspace = true }
+outl-actions = { workspace = true }
+outl-sync-iroh = { workspace = true }
+outl-config = { workspace = true }
+outl-exec = { workspace = true, default-features = true }
+outl-plugins = { workspace = true }
+outl-shortcuts = { workspace = true }
+outl-theme = { workspace = true }
+# Crash reporting (RFC 0377). The dependency is unconditional; the *reporter*
+# is not. `outl-telemetry`'s own `sentry` feature is what links the SDK, and it
+# is off by default, so a build nobody passed `--features sentry` to contains
+# no reporter to switch on — that is condition 1, and it is why someone who
+# clones this repo and runs it has no Sentry in the binary at all.
+outl-telemetry = { workspace = true }
+# Workspace layout + the device-actor protocol. The TUI used to parse
+# `.outl/config.toml` by hand and drifted from the CLI's schema; one
+# owner is the point.
+outl-ws = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+# Width-aware word wrapping of block text in the outline (terminals
+# don't reflow on their own, and CJK / emoji glyphs are 2 cells wide).
+unicode-width = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# Bridge for crates that emit via the `log` crate (Steel does this).
+# Without it our `tracing_subscriber` sees nothing from them and the
+# logs escape onto the TUI canvas via the default `log` impl.
+tracing-log = "0.2"
+chrono = { workspace = true }
+clap = { workspace = true }
+walkdir = { workspace = true }
+toml = { workspace = true }
+ulid = { workspace = true }
+# Cross-platform OS clipboard for `yr` / `/refer` / `/refer-embed`.
+# `arboard` falls back to a no-op on headless environments (no display
+# server / no $DISPLAY), so test runs and CI stay green.
+arboard = { version = "3", default-features = false }
+# OSC 52 terminal-clipboard escape encoding, for `yy` / `Y` / visual `y`
+# copy-as-markdown. Reaches the outer clipboard over SSH / Crostini /
+# tmux where `arboard` (which needs a local display server) can't.
+base64 = "0.23"
+# Open a markdown link `[text](url)` under the cursor (`gx`) in the
+# system's default browser / handler (issue #183). Desktop/mobile use
+# `tauri-plugin-opener`; the TUI isn't Tauri, so it uses the `open` crate.
+open = "5"
+
+# Native "open file" dialog for the `/upload` slash command. Excluded on
+# Linux so the workspace CI build (ubuntu) never pulls GTK — there
+# `/upload` prompts for a typed path instead. macOS uses Cocoa and Windows
+# the Win32 dialog, neither of which needs extra system libraries.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rfd = { version = "0.17", default-features = false }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+default = []
+# Links the Sentry SDK. Leave it off and `outl_telemetry::init` is a function
+# that returns `None`.
+#
+# **No release job passes this**, and that is worth stating here rather than
+# leaving as an inference: the pipeline builds `-p outl-cli --bin outl`, and
+# `outl` with no subcommand *is* the TUI, so the `tui@<version>` reports that
+# reach Sentry come from that binary. This standalone one is a developer
+# entry point. The feature exists so the two cannot drift if it ever ships,
+# and `outl-telemetry/tests/client_manifests.rs` lists this crate for the
+# same reason.
+sentry = ["outl-telemetry/sentry"]

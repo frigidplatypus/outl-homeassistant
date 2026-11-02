@@ -1,0 +1,437 @@
+//! The checks that need the materialized tree, and the repair they
+//! hand to `--repair`.
+//!
+//! Deletion is `Move(node, TRASH_ROOT)` (root `CLAUDE.md` invariant 6),
+//! so a deleted block is still in the tree and nothing but this check
+//! tells the user it is there. Projection drift is the other direction:
+//! the tree moved on and the `.md` did not, which is the one case where
+//! `--repair` is allowed to overwrite a page — and the neighbouring
+//! case, a `.md` holding content no op ever saw, where it must refuse
+//! (root `CLAUDE.md` invariant 8).
+
+use super::*;
+
+// ----------------------------------------------------------------- trash
+
+/// Deletion is `Move(node, TRASH_ROOT)`, so a deleted block never leaves
+/// the tree — and until now nothing told the user it was there.
+#[test]
+fn deleted_blocks_are_counted_and_previewed() {
+    let (_dir, root, _paths) = fresh();
+    let page = seed_page(&root, "notes", &["keep me", "delete me"]);
+
+    {
+        let mut ctx = crate::ws::open(&root).expect("open");
+        let victim = outl_actions::project_outline(&ctx.workspace, page)
+            .into_iter()
+            .find(|n| n.text.contains("delete me"))
+            .expect("the block to delete");
+        let id: NodeId = victim
+            .id
+            .parse::<ulid::Ulid>()
+            .map(NodeId)
+            .expect("node id");
+        outl_actions::delete(&mut ctx.workspace, &ctx.hlc, id).expect("delete");
+        outl_actions::apply_page_md_with_sidecar(&ctx.workspace, &root, page).expect("re-project");
+    }
+
+    let report = collect(&root, false).expect("doctor runs");
+    assert!(
+        has(&report, "trash holds 1 block(s)"),
+        "expected the trash count, got: {:#?}",
+        messages(&report)
+    );
+    assert!(
+        has(&report, "delete me"),
+        "the trashed block's text must be previewed, got: {:#?}",
+        messages(&report)
+    );
+}
+
+/// The doctor is where a user first learns the trash is restorable at
+/// all, so the count it prints is a verdict from `trash::refusal_for`
+/// and not decoration. It had no assertion until this test: the string
+/// appears exactly once in the repo, in the code that emits it.
+#[test]
+fn the_doctor_says_how_many_deletions_can_be_put_back() {
+    let (_dir, root, _paths) = fresh();
+    let page = seed_page(&root, "notes", &["keep me", "delete me"]);
+
+    {
+        let mut ctx = crate::ws::open(&root).expect("open");
+        let victim = outl_actions::project_outline(&ctx.workspace, page)
+            .into_iter()
+            .find(|n| n.text.contains("delete me"))
+            .expect("the block to delete");
+        let id: NodeId = victim
+            .id
+            .parse::<ulid::Ulid>()
+            .map(NodeId)
+            .expect("node id");
+        outl_actions::delete(&mut ctx.workspace, &ctx.hlc, id).expect("delete");
+        outl_actions::apply_page_md_with_sidecar(&ctx.workspace, &root, page).expect("re-project");
+    }
+
+    let report = collect(&root, false).expect("doctor runs");
+    assert!(
+        has(&report, "1 of 1 can be put back"),
+        "the doctor has to name the restorable count, got: {:#?}",
+        messages(&report)
+    );
+}
+
+#[test]
+fn an_empty_trash_says_so() {
+    let (_dir, root, _paths) = fresh();
+    seed_page(&root, "notes", &["hello"]);
+
+    let report = collect(&root, false).expect("doctor runs");
+    assert!(
+        has(&report, "trash is empty"),
+        "expected the empty-trash all-clear, got: {:#?}",
+        messages(&report)
+    );
+}
+
+// ------------------------------------------------------ projection drift
+
+#[test]
+fn a_stale_md_is_flagged_and_repair_reprojects_it_with_a_backup() {
+    let (_dir, root, paths) = fresh();
+    let page = seed_page(&root, "notes", &["first"]);
+
+    // Mutate the tree WITHOUT re-projecting: the `.md` stays a faithful
+    // projection of an older tree, which is exactly the drift case.
+    {
+        let mut ctx = crate::ws::open(&root).expect("open");
+        outl_actions::append_block(&mut ctx.workspace, &ctx.hlc, Some(page), Some("second"))
+            .expect("append");
+    }
+
+    let md = paths.pages.join("notes.md");
+    let before = std::fs::read_to_string(&md).unwrap();
+    assert!(!before.contains("second"));
+
+    let report = collect(&root, false).expect("doctor runs");
+    // An appended block is the zero-removal case, so the finding is the
+    // grouped one and the page is named in the plan rather than twice.
+    assert!(
+        has(&report, "1 page(s) hold a stale `.md` projection"),
+        "expected the drift warning, got: {:#?}",
+        messages(&report)
+    );
+    assert!(
+        has(&report, "notes.md"),
+        "a grouped finding still has to name the page at this size: {:#?}",
+        messages(&report)
+    );
+    assert!(
+        report.repairable.iter().any(|r| r.contains("re-project")),
+        "drift must be listed as repairable: {:?}",
+        report.repairable
+    );
+
+    let repaired = collect(&root, true).expect("doctor --repair runs");
+    let rep = repaired.repair.expect("a repair report");
+    assert_eq!(rep.failed, 0, "repair actions: {:#?}", rep.actions);
+
+    let after = std::fs::read_to_string(&md).unwrap();
+    assert!(
+        after.contains("second"),
+        "the `.md` must be re-projected from the op log, got: {after:?}"
+    );
+    let backup = Path::new(&rep.backup_dir).join("pages").join("notes.md");
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        before,
+        "the pre-repair `.md` must be recoverable from {}",
+        backup.display()
+    );
+}
+
+#[test]
+fn a_missing_sidecar_is_rebuilt_when_the_md_matches_the_op_log() {
+    let (_dir, root, paths) = fresh();
+    seed_page(&root, "notes", &["hello"]);
+    let md = paths.pages.join("notes.md");
+    let sidecar = outl_md::sidecar::sidecar_path_for(&md);
+    let md_before = std::fs::read_to_string(&md).unwrap();
+    std::fs::remove_file(&sidecar).unwrap();
+
+    let report = collect(&root, false).expect("doctor runs");
+    assert!(
+        report
+            .repairable
+            .iter()
+            .any(|r| r.contains("rebuild the sidecar")),
+        "a lost sidecar over matching content is repairable: {:?}",
+        report.repairable
+    );
+
+    let repaired = collect(&root, true).expect("doctor --repair runs");
+    let rep = repaired.repair.expect("a repair report");
+    assert_eq!(rep.failed, 0, "repair actions: {:#?}", rep.actions);
+    assert!(sidecar.exists(), "the sidecar must be back");
+    assert_eq!(
+        std::fs::read_to_string(&md).unwrap(),
+        md_before,
+        "rebuilding a sidecar must not change the `.md`"
+    );
+}
+
+/// A `.md` with no sidecar whose content the op log has never seen may
+/// be the only copy of that content. `--repair` must refuse it and send
+/// the user to `outl reconcile`.
+#[test]
+fn a_missing_sidecar_over_diverged_content_is_never_repaired() {
+    let (_dir, root, paths) = fresh();
+    seed_page(&root, "notes", &["hello"]);
+    let md = paths.pages.join("notes.md");
+    std::fs::remove_file(outl_md::sidecar::sidecar_path_for(&md)).unwrap();
+    std::fs::write(&md, "- hello\n- typed only in the editor\n").unwrap();
+
+    let report = collect(&root, false).expect("doctor runs");
+    assert!(
+        !report
+            .repairable
+            .iter()
+            .any(|r| r.contains("rebuild the sidecar")),
+        "diverged content must NOT be repairable: {:?}",
+        report.repairable
+    );
+    assert!(
+        has(&report, "run `outl reconcile`"),
+        "the user must be pointed at reconcile, got: {:#?}",
+        messages(&report)
+    );
+
+    let repaired = collect(&root, true).expect("doctor --repair runs");
+    assert_eq!(
+        std::fs::read_to_string(&md).unwrap(),
+        "- hello\n- typed only in the editor\n",
+        "`--repair` must never clobber content the op log has not seen"
+    );
+    assert!(repaired.repair.is_none(), "there was nothing safe to do");
+}
+
+/// A bare `foo::` is what an older render wrote for `PropValue::Text("")`.
+/// The value is in the op log, so this is ordinary projection drift:
+/// `--repair` rewrites the `.md` and the line goes away.
+#[test]
+fn an_empty_property_line_is_stale_projection_and_repair_drops_it() {
+    let (_dir, root, paths) = fresh();
+    let page = seed_page(&root, "notes", &["hello"]);
+
+    {
+        let mut ctx = crate::ws::open(&root).expect("open");
+        outl_actions::set_property(
+            &mut ctx.workspace,
+            &ctx.hlc,
+            page,
+            "foo",
+            Some(outl_core::property::PropValue::Text(String::new())),
+        )
+        .expect("store the empty value");
+    }
+
+    let md = paths.pages.join("notes.md");
+    let before = std::fs::read_to_string(&md).unwrap();
+    let planted = format!("foo::\n{before}");
+    std::fs::write(&md, &planted).unwrap();
+    let sidecar_path = outl_md::sidecar::sidecar_path_for(&md);
+    let mut sidecar = outl_md::sidecar::read(&sidecar_path).expect("sidecar");
+    sidecar.last_synced_hash = outl_md::sidecar::file_hash(&planted);
+    outl_md::sidecar::write(&sidecar_path, &sidecar).expect("stamp the planted hash");
+
+    let report = collect(&root, false).expect("doctor runs");
+    assert!(
+        has(&report, "1 page(s) hold a stale `.md` projection"),
+        "a ghost `foo::` is stale projection, got: {:#?}",
+        messages(&report)
+    );
+    // A property line is not block content, so this page carries no
+    // removal — which is exactly what puts it in the grouped finding
+    // instead of being named with a line count.
+    assert!(
+        !has(&report, "content line(s) from disk"),
+        "a property line is not block content, so nothing may report a \
+         removal: {:#?}",
+        messages(&report)
+    );
+    assert!(
+        report
+            .repairable
+            .iter()
+            .any(|r| r.contains("adds or reorders only, removes nothing")),
+        "the plan still has to state the cost per page: {:?}",
+        report.repairable
+    );
+    assert!(
+        !has(&report, "exist in no op"),
+        "the empty value is in the log, so this must not be unlogged content: {:#?}",
+        messages(&report)
+    );
+
+    let repaired = collect(&root, true).expect("doctor --repair runs");
+    let rep = repaired.repair.expect("a repair report");
+    assert_eq!(rep.failed, 0, "repair actions: {:#?}", rep.actions);
+    let after = std::fs::read_to_string(&md).unwrap();
+    assert_eq!(
+        after, before,
+        "repair rewrites the page to the projection the log holds"
+    );
+    let backup = Path::new(&rep.backup_dir).join("pages").join("notes.md");
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        planted,
+        "the ghost line stays recoverable from {}",
+        backup.display()
+    );
+}
+
+// ------------------------------------------------------ alias collisions
+
+/// Two pages claiming the same alias make `[[NYC]]` ambiguous. The
+/// resolver still picks a deterministic winner, but the doctor is the
+/// surface that tells the user the name resolves arbitrarily.
+#[test]
+fn shared_alias_names_both_claimants() {
+    let (_dir, root, _paths) = fresh();
+    let notes = seed_page(&root, "notes", &["hello"]);
+    let city = seed_page(&root, "city", &["world"]);
+
+    {
+        let mut ctx = crate::ws::open(&root).expect("open");
+        for page in [notes, city] {
+            outl_actions::set_property(
+                &mut ctx.workspace,
+                &ctx.hlc,
+                page,
+                outl_actions::page::ALIAS_KEY,
+                Some(outl_core::property::PropValue::Text("NYC".into())),
+            )
+            .expect("set alias");
+        }
+    }
+
+    let report = collect(&root, false).expect("doctor runs");
+    assert!(
+        has(&report, "alias \"nyc\" is claimed by 2 pages"),
+        "expected the collision line, got: {:#?}",
+        messages(&report)
+    );
+}
+
+/// Distinct aliases are a pass, stated so the check is visibly present
+/// once a workspace uses aliases at all.
+#[test]
+fn distinct_aliases_pass_with_a_count() {
+    let (_dir, root, _paths) = fresh();
+    let notes = seed_page(&root, "notes", &["hello"]);
+    let city = seed_page(&root, "city", &["world"]);
+
+    {
+        let mut ctx = crate::ws::open(&root).expect("open");
+        for (page, alias) in [(notes, "N. Y."), (city, "the city")] {
+            outl_actions::set_property(
+                &mut ctx.workspace,
+                &ctx.hlc,
+                page,
+                outl_actions::page::ALIAS_KEY,
+                Some(outl_core::property::PropValue::Text(alias.into())),
+            )
+            .expect("set alias");
+        }
+    }
+
+    let report = collect(&root, false).expect("doctor runs");
+    assert!(
+        has(&report, "every alias name is unique"),
+        "expected the ok line, got: {:#?}",
+        messages(&report)
+    );
+}
+
+/// **The asymmetry the grouping rests on.**
+///
+/// A stale page whose re-projection removes content is a page the user
+/// has to decide about, so it keeps its own line with its own count. A
+/// stale page that only reorders a property is a page with nothing to
+/// decide, so it is counted. Collapsing both would hide the only one
+/// that matters inside a number; collapsing neither is what made a
+/// report with two real findings print 908 warnings
+/// ([#286](https://github.com/outlmd/outl/issues/286)).
+///
+/// This is the test to read before widening the grouping.
+#[test]
+fn a_page_that_loses_content_is_named_even_while_the_harmless_ones_are_counted() {
+    let (_dir, root, _paths) = fresh();
+    // Removes 2 lines. Small enough to stay under the volume ceiling, so
+    // the finding is the per-page one and not the refusal.
+    let (losing, _witness) = page_with_deleted_blocks(&root, 6, 2);
+
+    // A second page that is stale with nothing to lose: an appended block
+    // the `.md` has not seen.
+    let clean = seed_page(&root, "clean", &["first"]);
+    {
+        let mut ctx = crate::ws::open(&root).expect("open");
+        outl_actions::append_block(&mut ctx.workspace, &ctx.hlc, Some(clean), Some("second"))
+            .expect("append");
+    }
+
+    let report = collect(&root, false).expect("doctor runs");
+    let found = messages(&report);
+
+    assert!(
+        found
+            .iter()
+            .any(|m| m.contains(&losing.display().to_string())
+                && m.contains("removes 2 content line(s) from disk")),
+        "the page that loses content must be named with its count: {found:#?}"
+    );
+    assert!(
+        has(&report, "1 page(s) hold a stale `.md` projection"),
+        "the harmless page must be counted, not named: {found:#?}"
+    );
+    assert!(
+        !found
+            .iter()
+            .any(|m| m.contains("2 page(s) hold a stale `.md` projection")),
+        "the grouped count must cover only the pages that lose nothing: {found:#?}"
+    );
+}
+
+/// A grouped finding that only counts is a dead end: the user cannot
+/// tell a systemic rewrite from one odd page, and has nowhere to look.
+/// Up to `STALE_SAMPLE` paths ride along, and past that the line says
+/// how many it withheld and where the rest are.
+#[test]
+fn a_grouped_finding_names_what_it_can_and_says_how_much_it_withheld() {
+    let (_dir, root, _paths) = fresh();
+    for i in 0..8 {
+        let page = seed_page(&root, &format!("p{i}"), &["first"]);
+        let mut ctx = crate::ws::open(&root).expect("open");
+        outl_actions::append_block(&mut ctx.workspace, &ctx.hlc, Some(page), Some("second"))
+            .expect("append");
+    }
+
+    let report = collect(&root, false).expect("doctor runs");
+    let grouped = messages(&report)
+        .into_iter()
+        .find(|m| m.contains("hold a stale `.md` projection"))
+        .expect("the grouped finding");
+
+    assert!(
+        grouped.contains("8 page(s)"),
+        "the count has to be the real one: {grouped}"
+    );
+    assert_eq!(
+        grouped.matches("pages/p").count(),
+        5,
+        "five paths ride along so the user can recognise the pattern: {grouped}"
+    );
+    assert!(
+        grouped.contains("and 3 more; `--json` lists every one"),
+        "a withheld remainder has to say where to find it: {grouped}"
+    );
+}

@@ -1,0 +1,14 @@
+# Dependencies / build artifacts
+frontend/node_modules
+frontend/dist
+vendor/outl/target
+**/target
+
+# VCS metadata from the vendored checkout
+vendor/outl/.git
+**/.git
+.git
+
+# Misc
+*.log
+.DS_Store

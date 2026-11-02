@@ -1,0 +1,49 @@
+[package]
+name = "outl-server"
+description = "Headless outl server: serves the browser UI over HTTP, reuses the desktop command bodies, and exposes sync + MCP + the workspace filesystem."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[[bin]]
+name = "outl-server"
+path = "src/main.rs"
+
+[dependencies]
+outl-core = { workspace = true }
+outl-md = { workspace = true }
+outl-actions = { workspace = true }
+outl-config = { workspace = true }
+outl-exec = { workspace = true, default-features = true }
+outl-plugins = { workspace = true, features = ["registry"] }
+outl-shortcuts = { workspace = true }
+outl-tauri-shared = { workspace = true }
+outl-theme = { workspace = true }
+outl-sync-iroh = { workspace = true }
+
+# HTTP + WebSocket server.
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs"] }
+hostname = "0.4"
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+ulid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+notify = "8"
+notify-debouncer-full = "0.7"
+# Pin the rustls crypto provider (iroh pulls rustls with default features off).
+rustls = { workspace = true }
+
+[features]
+default = []

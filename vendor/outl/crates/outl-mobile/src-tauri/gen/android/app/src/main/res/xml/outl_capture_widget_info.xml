@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  `updatePeriodMillis="0"`: the widget never refreshes. It shows one
+  fixed label and opens a deep link, so there is nothing to poll — the
+  same `policy: .never` the iOS widget's timeline uses.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="57dp"
+    android:minHeight="57dp"
+    android:targetCellWidth="1"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/outl_capture_widget"
+    android:description="@string/capture_widget_description"
+    android:previewLayout="@layout/outl_capture_widget"
+    android:resizeMode="none"
+    android:widgetCategory="home_screen" />

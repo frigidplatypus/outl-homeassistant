@@ -1,0 +1,328 @@
+@import "tailwindcss";
+@import "@outl/shared/highlight/styles";
+@import "@outl/shared/warnings/styles";
+@import "@outl/shared/peers/styles";
+@import "@outl/shared/trust/styles";
+@import "@outl/shared/polish/styles";
+@import "@outl/shared/plugins/styles";
+@import "@outl/shared/diagram/styles";
+
+/* Scan the shared package too: the inline ref/tag/link classes live only
+   in `MarkdownInline.tsx`, so without this Tailwind never emits them and
+   refs paint as plain text. Same line as the desktop's styles.css. */
+@source "../../outl-frontend-shared/src/**/*.{ts,tsx}";
+
+/* Spring-ish ease curves used across the app. Apple's UIKit defaults
+   land somewhere between these two — `--ease-spring-out` is for sheets
+   coming in (overshoots a hair); `--ease-spring-in` settles back to
+   rest without bounce. Pure CSS approximation; switching to a real
+   spring solver would need JS rAF loops and isn't worth the cost. */
+:root {
+  --ease-spring-out: cubic-bezier(0.16, 1.08, 0.38, 1);
+  --ease-spring-in: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes outl-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes outl-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes outl-sheet-up {
+  from {
+    transform: translateY(12%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.outl-fade-in {
+  animation: outl-fade-in 200ms var(--ease-spring-in);
+}
+
+.outl-sheet-up {
+  animation: outl-sheet-up 360ms var(--ease-spring-out);
+}
+
+@keyframes outl-toast-in {
+  from {
+    transform: translateY(-14px) scale(0.96);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.outl-toast-in {
+  animation: outl-toast-in 320ms var(--ease-spring-out);
+}
+
+@keyframes outl-skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Shimmer used by `<Skeleton />` placeholders during initial load.
+   Gradient sweeps across the row so users read it as "loading", not
+   "broken". Built from `--color-outl-border` (its dark value,
+   #382c54, is exactly the old hardcoded dark-mode rgba) so the
+   shimmer re-tints on hydrate and on OS appearance change instead of
+   carrying its own frozen rgba per theme — a raw rgba here would be
+   a second, un-synced copy of a colour `Palette` already owns. */
+.outl-skeleton {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-outl-border) 40%, transparent) 0%,
+    color-mix(in srgb, var(--color-outl-border) 70%, transparent) 50%,
+    color-mix(in srgb, var(--color-outl-border) 40%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: outl-skeleton-shimmer 1400ms ease-in-out infinite;
+}
+
+/* Subtle "press" feedback for native-feeling tap targets. */
+.outl-press {
+  transition:
+    transform 80ms ease-out,
+    opacity 120ms ease-out;
+}
+.outl-press:active {
+  transform: scale(0.96);
+  opacity: 0.7;
+}
+
+/* Accessibility: respect the OS-level "reduce motion" toggle. Apple
+   reviewers explicitly check that animations honor this. We kill the
+   keyframe animations and slow transitions; pressed-state feedback
+   stays so the user still sees something on tap. */
+@media (prefers-reduced-motion: reduce) {
+  .outl-fade-in,
+  .outl-sheet-up,
+  .outl-toast-in,
+  .outl-skeleton {
+    animation: none;
+  }
+  .outl-press {
+    transition: opacity 80ms ease-out;
+  }
+  .outl-press:active {
+    transform: none;
+  }
+}
+
+@theme {
+  /*
+   * Boot values only — `installTheme()` rewrites every --color-outl-*
+   * on <html> once the palette arrives from `get_theme`. These exist
+   * so the first painted frame is branded rather than white.
+   *
+   * `bg-(--color-outl-bg)` is Tailwind v4's arbitrary-property
+   * shorthand — it resolves the CSS custom property at paint time
+   * whether the variable is declared under `@theme` or `:root`, so
+   * `@theme` is not what makes the utility work. What `@theme` buys
+   * here is the boot *value* for the first painted frame, before
+   * `installTheme()` runs — declare it under `:root` instead and the
+   * utility still resolves, it just has nothing to paint until the
+   * palette arrives over the wire (see root CLAUDE.md invariant 13).
+   */
+  --color-outl-bg: #0c0814;
+  --color-outl-bg-elev: #15101f;
+  --color-outl-fg: #f4f1fa;
+  --color-outl-fg-dim: #b4adc7;
+  --color-outl-fg-dimmer: #7b7390;
+  --color-outl-border: #382c54;
+  --color-outl-accent: #a78bfa;
+  --color-outl-accent-fg: #0c0814;
+  --color-outl-accent-soft: #c4b5fd;
+  --color-outl-accent-alt: #d6ff47;
+  --color-outl-warn: #fbbf24;
+  --color-outl-destructive: #fb7185;
+  --color-outl-destructive-fg: #0c0814;
+  --color-outl-ref-link-fg: #a78bfa;
+  --color-outl-tag-link-fg: #f0abfc;
+  --color-outl-md-link-fg: #7dd3fc;
+  --color-outl-bold-fg: #f4f1fa;
+  --color-outl-code-fg: #d6ff47;
+  --color-outl-todo-open-fg: #fbbf24;
+  --color-outl-todo-done-fg: #d6ff47;
+  --color-outl-highlight-bg: #fbbf24;
+  --color-outl-highlight-fg: #0c0814;
+
+  /* Chrome tokens — applied to floating capsules (header actions, edit
+     toolbar). The shadow derives from the active palette instead of
+     opening a second, OS-selected light/dark path. */
+  --radius-capsule: 9999px;
+  --shadow-capsule: 0 4px 16px color-mix(in srgb, var(--color-outl-fg) 10%, transparent);
+  --blur-chrome: 24px;
+
+  /* The crash-reporting strip (`@outl/shared/polish`) is `fixed` to the
+     bottom, where this client already floats `BottomBar`. Lift it clear
+     of that capsule plus the home indicator; the shared stylesheet
+     defaults to a desktop window, whose bottom edge is empty. */
+  --outl-notice-offset: calc(max(env(safe-area-inset-bottom), 12px) + 60px);
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Barcode scanner (windowed:true) draws the live camera *behind* the webview.
+   While scanning, <html> carries `.barcode-scanning` (set by DevicesSheet):
+   the app goes fully transparent and #root is hidden so the camera shows
+   through. The `.scan-overlay` is portalled to <body> (outside #root) so it
+   stays visible over the feed with framing + a Cancel button. */
+html.barcode-scanning,
+html.barcode-scanning body,
+html.barcode-scanning #root {
+  background: transparent !important;
+}
+html.barcode-scanning #root {
+  visibility: hidden;
+}
+
+.scan-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: calc(env(safe-area-inset-top) + 24px) 24px
+    calc(env(safe-area-inset-bottom) + 24px);
+  pointer-events: none;
+}
+.scan-frame {
+  width: min(72vw, 280px);
+  aspect-ratio: 1;
+  border: 3px solid rgba(255, 255, 255, 0.95);
+  border-radius: 28px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.35);
+}
+.scan-hint {
+  margin: 0;
+  color: #fff;
+  font-weight: 600;
+  font-size: 15px;
+  text-align: center;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+}
+.scan-cancel {
+  pointer-events: auto;
+  padding: 13px 36px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #000;
+  font-weight: 600;
+  font-size: 16px;
+}
+.scan-cancel:active {
+  opacity: 0.8;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-outl-bg);
+  color: var(--color-outl-fg);
+  font-size: 17px;
+  line-height: 1.4;
+  overscroll-behavior: none;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+ * Deliberately unlayered, and deliberately NOT carrying `color`.
+ *
+ * An unlayered rule outranks every layered one regardless of specificity,
+ * and Tailwind's utilities live in `@layer utilities` — so a `color` here
+ * beats every `text-*` class a button carries. That is what made the week
+ * strip's selected day paint its accent tile and then render near-black
+ * text inside it: `text-(--color-outl-accent-fg)` on the <button> resolved
+ * to nothing, and the spans inherited the canvas foreground from #root.
+ * Every primary accent button on this client had the same silent failure.
+ *
+ * Nothing is lost by dropping it. Tailwind's preflight already sets
+ * `button, input, select, optgroup, textarea { font: inherit; color:
+ * inherit }` in `@layer base`, which overrides the UA's `buttontext` (an
+ * author layer always beats the UA sheet) while still losing to a utility.
+ *
+ * `font-family` / `font-size` stay for now even though preflight's `font:
+ * inherit` covers them too: unlayered, they also kill `text-[16px]` on a
+ * button, so removing them is a typography change across the whole app
+ * rather than part of this fix.
+ */
+button,
+input,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+textarea {
+  resize: none;
+}
+
+/* Brand the caret + text selection with the accent purple. Tiny
+   detail that makes the editor feel like one of *our* apps the moment
+   the user taps in — instead of the default iOS blue cursor on a
+   default grey selection. */
+textarea,
+input {
+  caret-color: var(--color-outl-accent);
+}
+::selection {
+  background: color-mix(in srgb, var(--color-outl-accent) 25%, transparent);
+}
+
+/* iOS momentum scroll polyfill */
+.ios-scroll {
+  -webkit-overflow-scrolling: touch;
+  overflow-y: auto;
+}
+
+/*
+ * Refs, tags and links render as underlined text like the desktop (no
+ * chip), so the finger target comes from here instead: an invisible
+ * box at least 44pt tall around each one. It sits behind the text and
+ * overlaps neighbouring words a little, which is the same trade iOS
+ * makes for inline links.
+ */
+.outl-ref {
+  position: relative;
+}
+.outl-ref::after {
+  content: "";
+  position: absolute;
+  left: -4px;
+  right: -4px;
+  top: 50%;
+  height: 44px;
+  transform: translateY(-50%);
+}

@@ -1,0 +1,872 @@
+/**
+ * Typed wrappers around the Tauri commands every outl frontend
+ * client invokes. The Rust side (`outl-mobile/src-tauri/src/lib.rs`,
+ * `outl-desktop/src-tauri/src/lib.rs`) registers commands with the
+ * exact names below; this file is the single TS surface so both
+ * clients agree on shape, name and return type.
+ *
+ * Client-specific commands (mobile gestures, `pick_workspace_dir`
+ * on desktop, etc) live in the client's own `lib/api.ts` and never
+ * end up here.
+ *
+ * `run_code_block` used to be considered client-specific (desktop
+ * only). Mobile picked up the same command as of v0.6.x (long-press
+ * → "Run code"), and both clients now share the wrapper below.
+ */
+
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+
+import type {
+  BacklinksOrder,
+  CreateBlockReply,
+  CutBlockReply,
+  PageBacklinks,
+  PageMeta,
+  PageView,
+  Palette,
+  PageTimeline,
+  PropertyKey,
+  ResolvedBlock,
+  RunCodeBlockReply,
+  TemplateDto,
+  ThemeConfig,
+  WorkspaceSummary,
+} from "./types";
+
+/**
+ * One emoji match returned by {@link searchEmojis}. Mirrors
+ * `outl_md::emoji::EmojiHit` (`outl-md/src/emoji.rs`). `score` is
+ * stable enough for the autocomplete popup to sort on — not a public
+ * ranking guarantee.
+ */
+export interface EmojiHit {
+  shortcode: string;
+  glyph: string;
+  score: number;
+}
+
+/**
+ * One block match returned by {@link searchBlocks}. Mirrors
+ * `outl_tauri_shared::state::BlockHit`. `handle` is the ref handle
+ * (`blk-XXXXXX`) the caller inserts wrapped in `((…))`; block refs
+ * resolve by handle, never by the display `text`. `text` is a
+ * single-line snippet for the popup label and `source_slug` its page.
+ */
+export interface BlockHit {
+  handle: string;
+  id: string; // node id, to select the block once its page is open
+  text: string;
+  source_slug: string;
+}
+
+// ---------------------------------------------------------------------------
+// Page / journal navigation
+// ---------------------------------------------------------------------------
+
+/** Every page, uncapped, in browse order: journals newest, then A-Z. */
+export function listPages(): Promise<PageMeta[]> {
+  return invoke<PageMeta[]>("list_all_pages");
+}
+
+/**
+ * Fuzzy-search known pages by `query`. Empty query returns up to 25
+ * in browse order (journals newest first, then names A-Z); non-empty
+ * filters case-insensitively on title and slug, exact then prefix.
+ *
+ * Used by the floating ref suggester that appears while the user
+ * types inside `[[…]]`.
+ */
+export function searchPages(query: string): Promise<PageMeta[]> {
+  return invoke<PageMeta[]>("search_pages", { query });
+}
+
+/**
+ * Search the workspace for pages with `type:: person`, ranked by the
+ * query (same fuzzy shape as {@link searchPages} — exact, prefix,
+ * contains). Powers the `@` mention autocomplete in every client.
+ * Backed by `outl_actions::search_persons` so every surface ranks the
+ * same way without re-implementing the filter.
+ */
+export function searchPersons(query: string): Promise<PageMeta[]> {
+  return invoke<PageMeta[]>("search_persons", { query });
+}
+
+/**
+ * Search the GitHub gemoji catalog for shortcodes matching `query`.
+ * Ranks exact → prefix → substring; shorter shortcodes win ties.
+ * `limit` caps the result set (defaults to 8 — the size of the
+ * autocomplete popup in every client). Backed by
+ * `outl_md::emoji::search` so TUI / mobile / desktop rank identically.
+ */
+export function searchEmojis(query: string, limit = 8): Promise<EmojiHit[]> {
+  return invoke<EmojiHit[]>("outl_emoji_search", { query, limit });
+}
+
+/**
+ * Fuzzy-search block text for the `((…))` block-ref autocomplete.
+ * Empty query returns the most recently created blocks; a non-empty
+ * query ranks case-insensitive substring matches (prefix first, shorter
+ * blocks winning ties). Backed by `outl_md::WorkspaceIndex::search_block_text`
+ * so every client ranks the same way. The caller inserts each hit's
+ * `handle` wrapped in `((…))` — never the display `text`.
+ */
+export function searchBlocks(query: string): Promise<BlockHit[]> {
+  return invoke<BlockHit[]>("search_blocks", { query });
+}
+
+export function openTodayJournal(): Promise<PageView> {
+  return invoke<PageView>("open_today_journal");
+}
+
+export function openJournalFor(slug: string): Promise<PageView> {
+  return invoke<PageView>("open_journal_for", { slug });
+}
+
+export function openPageBySlug(slug: string): Promise<PageView> {
+  return invoke<PageView>("open_page_by_slug", { slug });
+}
+
+/**
+ * Resolve and open whatever a user-typed ref / tag / picker entry
+ * points at, in one round-trip. The backend runs the canonical
+ * decision tree (date → journal, else literal/slugified/title match
+ * → existing page, else create a fresh page with the typed string
+ * as the title). This is the entry point every ref-click handler
+ * on the frontend should use; never branch by shape in TS before
+ * calling — the regex-vs-parser drift is exactly what this command
+ * exists to remove (`[[2026-13-01]]` used to surface
+ * `invalid date slug` because the TS shape regex disagreed with
+ * the Rust semantic parser).
+ */
+export function openRef(target: string): Promise<PageView> {
+  return invoke<PageView>("open_ref", { target });
+}
+
+/**
+ * Import an external `.md` / `.txt` the OS handed us ("Open With →
+ * outl") and return the page to show.
+ *
+ * Lands under the `open-in/` namespace. A file already imported from
+ * this path is **not** imported twice — the reply is the page it
+ * produced the first time, so re-opening navigates instead of
+ * duplicating every block. Policy lives in `outl_actions::open_with`.
+ */
+export function openExternalFile(sourcePath: string): Promise<PageView> {
+  return invoke<PageView>("open_external_file", { sourcePath });
+}
+
+export function previousDay(slug: string): Promise<string> {
+  return invoke<string>("previous_day", { slug });
+}
+
+export function nextDay(slug: string): Promise<string> {
+  return invoke<string>("next_day", { slug });
+}
+
+export function todaySlug(): Promise<string> {
+  return invoke<string>("today_slug_cmd");
+}
+
+export function dateTitle(slug: string): Promise<string> {
+  return invoke<string>("date_title", { slug });
+}
+
+export function resolveRef(target: string): Promise<PageMeta | null> {
+  return invoke<PageMeta | null>("resolve_ref", { target });
+}
+
+/**
+ * Delete a page by slug. The caller MUST confirm before invoking —
+ * this call does not re-prompt. The backend moves the page root to
+ * `NodeId::trash()` (a single `Op::Move`, so the whole subtree goes
+ * with it), drops the on-disk `.md` + `.outl` projection, and
+ * returns a fresh {@link PageView} of **today's journal** so the
+ * caller navigates away from the (now-gone) page in the same
+ * round-trip.
+ *
+ * The op stays in the log forever — deletion converges across
+ * devices through the normal CRDT replay and is theoretically
+ * recoverable from the log (no UI for that exists today).
+ */
+export function deletePage(slug: string): Promise<PageView> {
+  return invoke<PageView>("delete_page", { slug });
+}
+
+/**
+ * Compute a page's backlinks lazily, off the page-open path.
+ *
+ * `backlinks_for_page` is an O(blocks-in-workspace) scan, so it's no
+ * longer bundled into {@link PageView} — computing it there blocked the
+ * first journal paint on a large workspace. Call this after the outline
+ * renders (keyed on the current page slug) and fill the backlinks panel
+ * when it resolves. Mirrors the TUI's lazy/cached backlinks.
+ */
+export function pageBacklinks(slug: string): Promise<PageBacklinks> {
+  return invoke<PageBacklinks>("page_backlinks", { slug });
+}
+
+/**
+ * Persist the backlinks-list direction (issue #142) and get `slug`'s
+ * backlinks back re-sorted under it. A pure display preference — it lives
+ * in `config.toml`, never the op log, so it does not converge between
+ * devices (same policy as the theme). Returns only the re-sorted
+ * backlinks (not a whole `PageView`): the panel already has the outline.
+ */
+export function setBacklinksOrder(
+  order: BacklinksOrder,
+  slug: string,
+): Promise<PageBacklinks> {
+  return invoke<PageBacklinks>("set_backlinks_order", { order, slug });
+}
+
+/**
+ * Resolve a batch of block ids (from a `sync-progress` `received-ops` event)
+ * to the distinct page/journal slugs they belong to — the "page X synced"
+ * labels in the pairing-screen feed. Best-effort: ids not yet materialized (a
+ * reload may still be in flight) are dropped, so the caller renders whatever
+ * resolved. The engine caps the id list, so this stays cheap.
+ */
+export function resolvePageLabels(nodeIds: string[]): Promise<string[]> {
+  return invoke<string[]>("resolve_page_labels", { nodeIds });
+}
+
+// ---------------------------------------------------------------------------
+// Structural templates
+// ---------------------------------------------------------------------------
+
+/**
+ * List every structural template defined in the workspace, sorted by
+ * invocation name. A template is any page with a non-empty `template::`
+ * property. Powers the desktop `/template` slash picker and the mobile
+ * template sheet. Wraps `list_templates_cmd` (the `_cmd` suffix on the
+ * Rust side avoids a name clash with the `outl_actions::list_templates`
+ * re-export in each client's command glob).
+ */
+export function listTemplates(): Promise<TemplateDto[]> {
+  return invoke<TemplateDto[]>("list_templates_cmd");
+}
+
+/**
+ * Deep-copy the template `name` under `targetBlockId`, applying built-in
+ * variable substitution (`{{date}}`, `{{page}}`, …) and stamping
+ * `from-template:: <slug>` on each root clone. Returns a refreshed
+ * {@link PageView} of the target block's enclosing page so the caller
+ * `applyView`s it in one round-trip.
+ *
+ * Rejects (string error → toast) on an unknown template name or a stale
+ * block id — nothing is created on a miss.
+ */
+export function instantiateTemplateAt(
+  name: string,
+  targetBlockId: string,
+): Promise<PageView> {
+  return invoke<PageView>("instantiate_template_at", {
+    name,
+    targetBlock: targetBlockId,
+  });
+}
+
+export function workspaceStats(): Promise<WorkspaceSummary> {
+  return invoke<WorkspaceSummary>("workspace_stats");
+}
+
+// ---------------------------------------------------------------------------
+// Block mutations (all scoped to a page)
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert a new block under `pageId`. Placement precedence:
+ * `beforeId` (sibling immediately before — vim `O`) wins over
+ * `afterId` (sibling immediately after — vim `o`), falling back to
+ * the last child of `parentId` (defaults to the page itself when all
+ * are null). Returns the refreshed {@link PageView} paired with
+ * `new_id` — the id of the freshly-inserted block — so the caller
+ * can put it into edit mode without diffing the outline. See
+ * {@link CreateBlockReply} for why the id is on the wire.
+ */
+export function createBlock(
+  pageId: string,
+  opts: {
+    afterId?: string | null;
+    beforeId?: string | null;
+    parentId?: string | null;
+    text?: string | null;
+  },
+): Promise<CreateBlockReply> {
+  return invoke<CreateBlockReply>("create_block", {
+    pageId,
+    afterId: opts.afterId ?? null,
+    beforeId: opts.beforeId ?? null,
+    parentId: opts.parentId ?? null,
+    text: opts.text ?? null,
+  });
+}
+
+export function editBlock(pageId: string, id: string, text: string): Promise<PageView> {
+  return invoke<PageView>("edit_block", { pageId, id, text });
+}
+
+/**
+ * Split a block at the caret: the text up to `charOffset` stays in the
+ * block, the rest moves into a new sibling below (returned as `new_id`
+ * so the client can drop the caret at its start). Mirrors
+ * `outl_actions::split_block`.
+ *
+ * `charOffset` is a **codepoint** offset — convert the textarea's
+ * UTF-16 `selectionStart` with `utf16OffsetToCharOffset` first, same as
+ * {@link pastePlain}. `charOffset === 0` opens an empty block above;
+ * a caret at/after the end creates an empty sibling below (plain Enter).
+ */
+export function splitBlock(
+  pageId: string,
+  id: string,
+  charOffset: number,
+): Promise<CreateBlockReply> {
+  return invoke<CreateBlockReply>("split_block", { pageId, id, charOffset });
+}
+
+export function toggleTodo(pageId: string, id: string): Promise<PageView> {
+  return invoke<PageView>("toggle_todo", { pageId, id });
+}
+
+/**
+ * Flip the block's blockquote marker on or off. Mirrors
+ * `outl_actions::block::toggle_quote`. Both mobile and desktop expose
+ * the same `toggle_quote` Tauri command so this wrapper works on
+ * every client.
+ */
+export function toggleQuote(pageId: string, id: string): Promise<PageView> {
+  return invoke<PageView>("toggle_quote", { pageId, id });
+}
+
+export function deleteBlock(pageId: string, id: string): Promise<PageView> {
+  return invoke<PageView>("delete_block", { pageId, id });
+}
+
+export function indentBlock(pageId: string, id: string): Promise<PageView> {
+  return invoke<PageView>("indent_block", { pageId, id });
+}
+
+export function outdentBlock(pageId: string, id: string): Promise<PageView> {
+  return invoke<PageView>("outdent_block", { pageId, id });
+}
+
+export function moveBlockUp(pageId: string, id: string): Promise<PageView> {
+  return invoke<PageView>("move_block_up", { pageId, id });
+}
+
+export function moveBlockDown(pageId: string, id: string): Promise<PageView> {
+  return invoke<PageView>("move_block_down", { pageId, id });
+}
+
+/**
+ * Move block `id` to sit immediately after `afterId`, re-parenting it
+ * under the target's parent. Backs the cut-and-paste-block gesture
+ * (`Cmd+X` then `Cmd+V` in view mode): the block keeps its identity,
+ * so `((blk-…))` refs and backlinks survive — and `afterId` may live
+ * on another page, which moves the block across pages.
+ */
+export function moveBlockAfter(
+  pageId: string,
+  id: string,
+  afterId: string,
+): Promise<PageView> {
+  return invoke<PageView>("move_block_after", { pageId, id, afterId });
+}
+
+/**
+ * Render block `id` and its subtree to clean outl markdown for the
+ * block clipboard (`Cmd+C` in view mode). The paste re-ingests it and
+ * mints fresh ids, so a copy duplicates rather than moves.
+ */
+export function copyBlockMarkdown(id: string): Promise<string> {
+  return invoke<string>("copy_block_markdown", { id });
+}
+
+/**
+ * Paste clipboard `text` (clean outl markdown) as the sibling(s)
+ * immediately after `afterId` — the `Cmd+V` of a copied block.
+ */
+export function pasteBlockAfter(
+  pageId: string,
+  afterId: string,
+  text: string,
+): Promise<PageView> {
+  return invoke<PageView>("paste_block_after", { pageId, afterId, text });
+}
+
+/**
+ * Cut block `id` and its subtree: render it to clean outl markdown
+ * (like {@link copyBlockMarkdown}) then move it to trash (`Op::Move`,
+ * never a physical removal — root `CLAUDE.md` invariant 6). The
+ * returned `markdown` feeds the same block-clipboard signal
+ * {@link pasteBlockAfter} reads, so cut-then-paste round-trips —
+ * this is **not** identity-preserving (the paste mints fresh ids,
+ * unlike the desktop's move-based `Cmd+X`/`Cmd+V`), which is what a
+ * mobile long-press "Cut" needs (RFC 0254 phase 4b).
+ */
+export function cutBlock(pageId: string, id: string): Promise<CutBlockReply> {
+  return invoke<CutBlockReply>("cut_block", { pageId, id });
+}
+
+/**
+ * Render block `id`'s `((blk-XXXXXX))` ref handle for the OS
+ * clipboard (issue #18). Reads the handle the workspace index
+ * already assigned (same mechanism `search_blocks` uses) rather than
+ * deriving one from the id directly, so a handle expanded past 6
+ * chars by a collision can't disagree. Rejects with "no ref handle
+ * yet — save and retry" when the block has no sidecar entry yet.
+ */
+export function copyBlockRef(id: string): Promise<string> {
+  return invoke<string>("copy_block_ref", { id });
+}
+
+/**
+ * Flip a page's `pinned:: true` property (issue #254's `TogglePin`).
+ * Refuses journal pages (`CannotPinJournal`) — a journal auto-rotates
+ * daily and would dilute a pinned-pages list with date-shaped junk.
+ * Returns the refreshed `PageView` so the caller can read
+ * `view.page.pinned` back.
+ */
+export function togglePin(pageId: string): Promise<PageView> {
+  return invoke<PageView>("toggle_pin", { pageId });
+}
+
+export function reloadWorkspace(): Promise<void> {
+  return invoke<void>("reload_workspace");
+}
+
+// ---------------------------------------------------------------------------
+// Undo / redo
+// ---------------------------------------------------------------------------
+//
+// Both GUI clients register the shared `outl_tauri_shared::commands::history`
+// body (RFC 0254 phase 1 — previously desktop-only, which is why these
+// wrappers used to live in `outl-desktop/src/lib/api.ts`). Promoted here so
+// mobile's keyboard-toolbar Undo / Redo buttons call the same wrapper.
+
+/**
+ * Revert the last committed block mutation on the page. Rejects with
+ * `"nothing to undo"` when the page's history stack is empty — the
+ * caller surfaces that as a status message, not a crash.
+ */
+export function undoPage(pageId: string): Promise<PageView> {
+  return invoke<PageView>("undo_page", { pageId });
+}
+
+/** Re-apply the mutation the last {@link undoPage} reverted. */
+export function redoPage(pageId: string): Promise<PageView> {
+  return invoke<PageView>("redo_page", { pageId });
+}
+
+/**
+ * Hand off an external-clipboard paste to the backend for conversion
+ * into a tree of blocks. The Rust side normalises external syntax
+ * (Roam `{{[[TODO]]}}`, GitHub checkboxes, etc.), parses the bullet
+ * structure, and grafts it under `blockId` at the caret position.
+ *
+ * Returns the refreshed `PageView` so the caller can re-render.
+ * `caret` is a `char` offset into the host block's text — for ASCII
+ * content the textarea's `selectionStart` (UTF-16 code units) is
+ * equivalent. The frontend should `preventDefault` on the original
+ * paste event before calling this so the default browser splice
+ * doesn't run alongside the backend conversion.
+ */
+export function pasteMarkdown(
+  pageId: string,
+  blockId: string,
+  caret: number,
+  text: string,
+): Promise<PageView> {
+  return invoke<PageView>("paste_markdown_at", {
+    pageId,
+    blockId,
+    caret,
+    text,
+  });
+}
+
+/**
+ * Paste clipboard text **without formatting** — the raw string is
+ * spliced into the host block at `caret`, with no outline detection,
+ * syntax normalization, or paragraph splitting. The plain counterpart of
+ * {@link pasteMarkdown} (desktop `Cmd+Shift+V`). Returns the refreshed
+ * `PageView`.
+ */
+export function pastePlain(
+  pageId: string,
+  blockId: string,
+  caret: number,
+  text: string,
+): Promise<PageView> {
+  return invoke<PageView>("paste_plain_at", {
+    pageId,
+    blockId,
+    caret,
+    text,
+  });
+}
+
+/**
+ * Serialize a block selection — each block plus its full subtree — to
+ * clean outl markdown for the OS clipboard. The inverse of
+ * {@link pasteMarkdown}: copy out, paste back into outl, same tree.
+ *
+ * `blockIds` is in document order (a single block, or a Visual range
+ * top-to-bottom); the markdown preserves it. A descendant whose ancestor
+ * is also selected is dropped (the ancestor's subtree already carries
+ * it), so a range spanning a parent and child never duplicates the child.
+ *
+ * Read-only — the backend produces the string, the caller writes it to
+ * `navigator.clipboard.writeText`.
+ */
+export function copyMarkdown(blockIds: string[]): Promise<string> {
+  return invoke<string>("copy_markdown", { blockIds });
+}
+
+/**
+ * Persist the collapsed flag on a single block. The backend generates
+ * `Op::SetCollapsed` and appends it to the device's per-actor
+ * `ops-<actor>.jsonl` so the flag converges across peers through the
+ * tree CRDT — never written to the sidecar (last-write-wins per file
+ * would lose concurrent flips). Returns the refreshed page view so
+ * the caller can re-render in one round trip.
+ */
+export function setBlockCollapsed(
+  pageId: string,
+  id: string,
+  collapsed: boolean,
+): Promise<PageView> {
+  return invoke<PageView>("set_block_collapsed", { pageId, id, collapsed });
+}
+
+/**
+ * Run the fenced code block identified by `blockId` inside the page
+ * identified by `pageId`. The Rust side resolves the flat-DFS index,
+ * runs `outl_exec::run_block_at_index` on a worker thread, and
+ * persists the result as a `> **result:**` sibling subblock.
+ *
+ * The reply bundles the refreshed `PageView` so the caller swaps the
+ * outline straight in — no follow-up navigation round-trip needed.
+ * `result_ok` is the runtime payload (stdout/stderr/exit/duration);
+ * `error` is an infrastructure failure message (unknown language,
+ * timeout, sandbox crash). They are mutually exclusive.
+ */
+export function runCodeBlock(
+  pageId: string,
+  blockId: string,
+): Promise<RunCodeBlockReply> {
+  return invoke<RunCodeBlockReply>("run_code_block", { pageId, blockId });
+}
+
+/**
+ * Sweep the page for query blocks (runtimes with `auto_run() == true`)
+ * and execute them. Returns the refreshed `PageView`.
+ */
+export function runAutoRunBlocks(
+  pageId: string,
+): Promise<{ ran: number; view: PageView }> {
+  return invoke<{ ran: number; view: PageView }>("run_auto_run_blocks", {
+    pageId,
+  });
+}
+
+/**
+ * Batch-resolve embed handles (`blk-XXXXXX`) to their source content.
+ * Returns a map from handle to {@link ResolvedBlock} — the source
+ * block's `text`, `page_slug`, `status`, and its `children` subtree
+ * (populated for `!((…))` embeds, empty for a leaf).
+ */
+export function resolveEmbeds(
+  handles: string[],
+): Promise<Record<string, ResolvedBlock>> {
+  return invoke<Record<string, ResolvedBlock>>("resolve_embeds", { handles });
+}
+
+/**
+ * Open an external `[label](url)` link in the user's default browser
+ * via `tauri-plugin-opener`. Shared by every client's `onLinkClick`
+ * handler so the scheme allow-list lives in one place.
+ *
+ * Only `http(s)` and `mailto` are allowed — anything else (`file:`,
+ * `javascript:`, …) is rejected so a crafted link inside a synced
+ * `.md` can't trigger an arbitrary local action. The promise rejects
+ * on a malformed or disallowed URL; callers surface it on the status
+ * line. The host must register the opener plugin and grant
+ * `opener:allow-open-url` for the call to succeed.
+ */
+export async function openExternalUrl(href: string): Promise<void> {
+  let scheme: string;
+  try {
+    scheme = new URL(href).protocol.replace(/:$/, "").toLowerCase();
+  } catch {
+    // `href` comes from synced / remote markdown — strip control chars
+    // and cap length before it reaches the status line so a hostile
+    // `.md` can't flood or corrupt the UI with the error string.
+    throw new Error(`refusing to open malformed URL: ${describeHref(href)}`);
+  }
+  if (scheme !== "http" && scheme !== "https" && scheme !== "mailto") {
+    throw new Error(`refusing to open non-web URL scheme: ${scheme}:`);
+  }
+  await openUrl(href);
+}
+
+/**
+ * Open a workspace asset (`assets/<hash>.<ext>`) in the OS default app
+ * (Preview, an image viewer, …). outl does **not** render the file — the
+ * backend resolves the link to an absolute path under `<root>/assets/`
+ * (rejecting traversal / external schemes) and hands it to the OS.
+ *
+ * The promise rejects when the asset hasn't synced to this device yet or
+ * the link is invalid; callers surface it on the status line. Route a
+ * clicked link here only when {@link isAssetLink} is true — external
+ * links go through {@link openExternalUrl}.
+ */
+export function openAsset(url: string): Promise<void> {
+  return invoke<void>("open_asset", { url });
+}
+
+/**
+ * Resolve a workspace asset (`assets/<hash>.<ext>`) to a
+ * `data:<mime>;base64,<…>` URL the webview can load directly — an
+ * `<img src>` for images, a PDF viewer for pdf.
+ *
+ * The backend resolves the link under `<root>/assets/` (rejecting
+ * traversal / external schemes), reads the bytes (size-capped so a giant
+ * file can't wedge the renderer) and base64-encodes them. Use only when
+ * {@link isAssetLink} is true; a remote `http(s)` image can be an `<img
+ * src>` directly. The promise rejects when the asset hasn't synced to
+ * this device yet or is too large — callers show a fallback chip.
+ */
+export function readAssetDataUrl(url: string): Promise<string> {
+  return invoke<string>("read_asset_data_url", { url });
+}
+
+/**
+ * Import a file from the OS into the workspace and attach its link as a
+ * new block, returning the refreshed {@link PageView}.
+ *
+ * The backend copies the file into `<root>/assets/<hash>.<ext>`
+ * (content-addressed, idempotent, size-capped by `[assets] max_bytes`)
+ * and inserts a block carrying its markdown link. `afterBlockId` places
+ * the new block right after that block (tolerating a stale anchor);
+ * omitting it appends at the end of the page.
+ */
+export function attachAsset(
+  sourcePath: string,
+  pageId: string,
+  afterBlockId?: string,
+): Promise<PageView> {
+  return invoke<PageView>("attach_asset", {
+    sourcePath,
+    pageId,
+    afterBlockId: afterBlockId ?? null,
+  });
+}
+
+/**
+ * The result of importing a file: where it landed under `assets/` and the
+ * ready-to-insert markdown link. Mirror of `outl_actions::ImportedAsset`.
+ */
+export interface ImportedAsset {
+  /** Workspace-relative link target, e.g. `assets/<hash>.pdf`. */
+  rel_path: string;
+  /** Original file name — the link's display text. */
+  display_name: string;
+  /** Whether the asset is an image (`![]()` vs `[]()`). */
+  is_image: boolean;
+  /** Ready-to-insert markdown: `![name](rel)` for images, else `[name](rel)`. */
+  markdown: string;
+}
+
+/**
+ * Import a file into the workspace **without** touching the outline, and
+ * return its {@link ImportedAsset} (with `markdown` ready to splice).
+ *
+ * This is the drag-and-drop path: a file dropped onto the active line is
+ * imported here, then the client inserts `markdown` straight into that
+ * block's editor text at the caret — so the insert respects an in-flight
+ * edit instead of racing it through a backend mutation. The copy is
+ * content-addressed / idempotent / size-capped, exactly like
+ * {@link attachAsset}, but no block is created here; the client's own
+ * commit writes the block text. Use {@link attachAsset} when you want a
+ * fresh block instead (the file-picker button).
+ */
+export function importAssetFile(sourcePath: string): Promise<ImportedAsset> {
+  return invoke<ImportedAsset>("import_asset_file", { sourcePath });
+}
+
+// ---------------------------------------------------------------------------
+// Peer / device pairing (iroh sync transport)
+// ---------------------------------------------------------------------------
+//
+// Moved to `commands-peers.ts` under the file-size ratchet; re-exported
+// here so `@outl/shared/api/commands` stays the one import path.
+export {
+  peerList,
+  peerPairHost,
+  peerPairJoin,
+  peerRemove,
+  peerStatus,
+  syncNow,
+} from "./commands-peers";
+
+// ---------------------------------------------------------------------------
+// External links
+// ---------------------------------------------------------------------------
+
+/** Make an untrusted `href` safe to show in an error/status message:
+ *  drop control characters and truncate to a sane length. */
+function describeHref(href: string): string {
+  // Drop control characters (charCode < 0x20 or DEL) and truncate so a
+  // hostile `href` can't flood or corrupt the status line.
+  const cleaned = Array.from(href)
+    .filter((c) => {
+      const code = c.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("");
+  return cleaned.length > 100 ? `${cleaned.slice(0, 100)}…` : cleaned;
+}
+
+// ── Plugins ─────────────────────────────────────────────────────────
+//
+// Host + marketplace both moved to `commands-plugins.ts` under the
+// file-size ratchet; re-exported here so the import path is unchanged.
+export {
+  filterRegistryItems,
+  pluginConfigSet,
+  pluginInstallOfficial,
+  pluginList,
+  pluginRegistryList,
+  pluginRun,
+  pluginSecretRemove,
+  pluginSecretSet,
+  pluginSetEnabled,
+  pluginSettingsDescribe,
+  pluginSyncHooks,
+  pluginToolbar,
+  pluginTransform,
+  pluginTransformers,
+  pluginUninstall,
+} from "./commands-plugins";
+
+// ── Reminders (`remind::`) ──────────────────────────────────────────
+//
+// Moved to `commands-reminders.ts` under the file-size ratchet, and
+// re-exported here so `@outl/shared/api/commands` stays the one import
+// path. The rule did not move with them: **when** a reminder fires is
+// decided in `outl_actions::reminders`, once, for every client.
+export {
+  clearReminderSnooze,
+  deliverDueReminders,
+  formatNextFire,
+  groupReminders,
+  listReminders,
+  markBlockDone,
+  reminderSettings,
+  setBlockRemind,
+  setReminderSettings,
+  snoozePresets,
+  snoozeReminder,
+} from "./commands-reminders";
+
+/**
+ * Set — or clear, with an empty `value` — any `key:: value` property
+ * on a block. Returns the refreshed page.
+ *
+ * Generic rather than one command per key: the property chips render
+ * whatever the block carries, so the writer has to accept whatever the
+ * user edits. {@link setBlockRemind} is the named shortcut for the
+ * authoring chords.
+ */
+export function setBlockProperty(
+  pageId: string,
+  blockId: string,
+  key: string,
+  value: string,
+): Promise<PageView> {
+  return invoke<PageView>("set_block_property", { pageId, blockId, key, value });
+}
+
+/**
+ * Property keys used anywhere in the workspace, most-used first.
+ *
+ * Deliberately **not** cached: the backend answer is a scan of the
+ * property map (no tree walk, no block text), so it is cheaper to ask
+ * every time an editor opens than to hold a list that goes stale the
+ * first time the user adds a key.
+ */
+export function knownPropertyKeys(): Promise<PropertyKey[]> {
+  return invoke<PropertyKey[]>("known_property_keys");
+}
+
+/**
+ * Every change to a page, newest first, read out of the op log.
+ *
+ * Read-only: there is no counterpart that restores a revision. The
+ * events include blocks that were **deleted** out of the page, which is
+ * usually what sends somebody to a history in the first place.
+ *
+ * Not cached. The backend reads the node's ops from storage per block
+ * in the page, so the answer is current by construction, and a cached
+ * timeline is stale the moment the user types.
+ *
+ * **Desktop only so far.** The command body is in `outl-tauri-shared`,
+ * so mobile gets it by registering `page_timeline` in its handler list
+ * and building a surface for it; until then this rejects there.
+ */
+export function pageTimeline(
+  pageId: string,
+  limit?: number,
+): Promise<PageTimeline> {
+  return invoke<PageTimeline>("page_timeline", { pageId, limit });
+}
+
+/**
+ * Set — or, with an empty `value`, clear — a property on the **page**
+ * itself (`icon::`, `type::`, …). Rejects the structural keys
+ * (`page-slug`, `page-kind`): those are the page's identity and
+ * renaming is `page_rename`, not a property edit.
+ */
+export function setPageProperty(
+  pageId: string,
+  key: string,
+  value: string,
+): Promise<PageView> {
+  return invoke<PageView>("set_page_property", { pageId, key, value });
+}
+
+// ---------------------------------------------------------------------------
+// Theme (RFC 0022)
+// ---------------------------------------------------------------------------
+
+/** Every built-in palette name, in user-facing order. */
+export function listThemes(): Promise<string[]> {
+  return invoke<string[]>("list_themes");
+}
+
+/**
+ * Resolve a palette by name (`null` for the default). Both GUI
+ * clients register the identical `get_theme` command
+ * (`outl_tauri_shared::commands::theme`), so the wrapper lives once
+ * here rather than per client.
+ */
+export function getTheme(name: string | null): Promise<Palette> {
+  return invoke<Palette>("get_theme", { name });
+}
+
+/**
+ * Resolve the `[theme]` section for this client: which preset for
+ * each side of the pair, and which side to use. Both GUI clients
+ * register the identical `get_theme_config` command
+ * (`outl_tauri_shared::commands::theme`), so — like {@link getTheme}
+ * — the wrapper lives once here rather than per client.
+ *
+ * `preset_dark` on the reply is already resolved (never empty); see
+ * {@link ThemeConfig} for why a caller must not second-guess it.
+ */
+export function getThemeConfig(): Promise<ThemeConfig> {
+  return invoke<ThemeConfig>("get_theme_config");
+}

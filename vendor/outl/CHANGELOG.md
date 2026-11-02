@@ -1,0 +1,2351 @@
+# Changelog
+
+All notable changes to outl are documented here.
+Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+### Added
+
+- **A task list on the desktop** ([#364](https://github.com/outlmd/outl/issues/364)).
+  `g t`, or `Cmd/Ctrl+Shift+L`, opens the workspace's open `TODO` / `DOING` blocks, grouped by page, journal days named the way the journal names them.
+  It lists the first 200 and shows the uncapped count beside them, so a workspace past the cap reads `200 of 1431 open` instead of looking complete.
+  Picking a row opens the page with the cursor on that block.
+  The desktop was the client with a reminders panel and no list of open work, and the phone already had one; it reads the same `list_open_tasks`.
+  Also in the palette: type "task list" in `Cmd+P`.
+  Credit to [@frigidplatypus](https://github.com/frigidplatypus), who pointed out that reminders belong next to tasks.
+  `Cmd/Ctrl+Shift+T` was the first choice and was refused: a terminal without the kitty protocol folds it onto the TUI's `Ctrl+T`, which toggles a TODO.
+- **One search box on the phone** ([#364](https://github.com/outlmd/outl/issues/364)).
+  The bottom bar's Search and Pages tabs opened the same sheet; the sheet now lists Pages, Tasks, Blocks and Actions in one pass, in the order the desktop's `Cmd+P` uses, and the `Pages | Blocks` switch is gone.
+  Credit to [@hugows](https://github.com/hugows) for the report.
+- **A Reminders tab on the phone's bottom bar** ([#364](https://github.com/outlmd/outl/issues/364)), in the slot the duplicate Search tab freed.
+  Credit to [@frigidplatypus](https://github.com/frigidplatypus).
+- **ARM64 is a published platform on Linux and on Windows, for every artifact outl ships** ([#411](https://github.com/outlmd/outl/issues/411)).
+  Raspberry Pi 4 / 5, ARM laptops, Snapdragon X machines, Ampere and Graviton instances: the options before this were `cargo build --release` or an x86_64 build under emulation.
+  New assets: `outl-desktop-linux-aarch64.{AppImage,deb,rpm}`, `outl-desktop-windows-aarch64-setup.exe`, `outl-linux-arm64.tar.gz`, `outl-windows-arm64.zip`, each with its `.sha256`, plus a Homebrew `arm64_linux` bottle and `linux/arm64` on the server image.
+  The Linux halves build on native ARM runners.
+  The Windows half is cross-linked from the x64 runner, which was the better trade once two things were checked rather than assumed: `windows-2025` carries `VC.Tools.ARM64`, and `aws-lc-sys` — the one dependency here that compiles C — looks for the `clang-cl` this target needs on PATH and then inside the VS install, which that image ships.
+  A native Windows-on-ARM runner would have needed `bun` under x64 emulation for the frontend build.
+- **A Scoop bucket for Windows** ([#413](https://github.com/outlmd/outl/issues/413)): `scoop bucket add outl https://github.com/outlmd/outl && scoop install outl/outl-beta`.
+  Unprivileged, portable, on PATH, and one manifest serves `64bit` and native `arm64` — so the ARM64 build above has a package manager on the day it exists rather than being a zip someone has to find.
+  `bucket/outl-beta.json` lives in this repo, like the Homebrew tap, and `update_tap` rewrites it with `jq` on every release.
+  The desktop installer is deliberately not a Scoop package, and `docs/scoop.md` says why; winget is the next one worth doing and is still open on that issue.
+- **`brew install outl-beta` works on ARM64 Linux.**
+  `Formula/outl-beta.rb` grew an `on_linux do on_arm` block and an `arm64_linux` bottle; ARM64 Linux has been a Tier 1 Homebrew platform since 5.0.0.
+- **`ghcr.io/outlmd/outl-server` is multi-arch.**
+  Every tag is now a manifest list over `linux/amd64` and `linux/arm64`, so `docker compose pull` on a Pi or a Graviton box resolves the right image with no `platform:` line.
+  `docker.yml` builds each architecture on a runner of that architecture, pushes it by digest, and merges the digests into the tag.
+  The old workflow comment said arm64 was waiting for "somebody who actually needs it" and a native runner; both arrived.
+  Tags cut before this stay single-arch — a `:sha-…` you pinned does not become a manifest list retroactively.
+  The provenance moved rather than going away, and ended up better than it was: the per-architecture builds pass `provenance: false`, because the digest the merge needs has to be the image's and buildx would otherwise wrap each one in an index of image + attestation, which merges into an `unknown/unknown` entry in the list a user pulls.
+  So `merge` attests the finished manifest list through Sigstore instead — the digest `docker pull <tag>` actually resolves, signed, verifiable with `gh attestation verify oci://ghcr.io/outlmd/outl-server --repo outlmd/outl`, where `provenance: mode=min` only attached an unsigned in-toto statement per architecture.
+
+- **`scripts/release_assets.py` is the list of what a release publishes**, and `scripts/check-release-assets.py` holds everything else to it.
+  Six places have to name the same platforms — three build matrices, `update_tap`'s loops, the formula, the cask, the Scoop manifest — and none can see the others.
+  Every disagreement is silent: a `sed` that matches no line still exits 0, and the tap bump ends on `git diff --quiet`, which only asks whether *something* changed, so somebody's `brew install` is the first thing to notice, one release later with a hash mismatch.
+  `--manifest` runs in `hygiene.yml`, parses rather than builds, needs nothing installed; 28 cases in `scripts/tests/test_check_release_assets.py` each mutate one file the way a careless change would and assert the specific complaint, because a checker that passes because its parser broke is worse than no checker.
+
+- **The macOS installer window is branded.**
+  Opening the dmg gave you a stock Finder window: two icons on grey, nothing saying what the thing you just downloaded is.
+  It now opens on artwork built from the project logo, with the app and the `Applications` alias placed on a drop card below the lockup.
+  The card's fill is not a taste decision.
+  The Finder draws those two icon labels in the system label colour, which flips with the OS appearance, so the fill is tuned to the luminance where near-black and near-white score the same: 4.58:1 and 4.59:1, both clearing WCAG AA in both appearances, which nothing lighter or darker can do.
+  `crates/outl-desktop/src-tauri/dmg/background.svg` is the source and carries that reasoning; the PNG beside it is what the bundler consumes.
+  The non-obvious half is that `tauri-bundler` skips the AppleScript applying any of this whenever `CI == "true"`, silently, so the release workflow opts back in and falls back to one stock-window retry if the Finder refuses the Apple Events permission that script needs.
+  A background image is not allowed to hold back a `required` asset.
+- **`alias::` — a page answers to short or alternative names.**
+  A page had exactly one human name: its `title::`. Long titles make dense refs — `[[São Paulo]]` typed next to `[[SP]]` from the other half of a vault is two names for one page, and outl only recognised the long one ([#302](https://github.com/outlmd/outl/issues/302)).
+  A page property `alias:: Big Apple, NYC` now lists extra names, comma-separated. Every resolution surface matches them beside the title: `[[NYC]]` opens the New York page, `#nyc` and `@NYC` land there too, its backlinks collect all three spellings, and autocomplete finds it from any of them. The aliases ride the title's paths — one case-insensitive comparison in the resolver ladder, one `title → slug` map in the workspace index — so no client changes anything to benefit (RFC 0107).
+  `outl doctor` reports alias names claimed by more than one page, so the shared spelling is visible instead of silently resolving to whichever match comes first.
+
+### Fixed
+
+- **`outl page prop list` listed the wrong properties, in both directions.**
+  It probed a hardcoded list of nine "well-known" keys instead of reading the page, so a page carrying `alpha::`, `due::`, `owner::` and `zeta::` listed **none** of them — and it listed `page-slug` / `page-kind`, which define the page and which `outl page prop set` refuses, inviting an edit that would rewrite the page's identity on the next projection.
+  The comment justifying the probe said the tree exposed no per-node property iterator; it has for a long time, and the sibling `outl block prop list` was already using it.
+  Both the CLI command and the `outl_page_prop_list` MCP tool now ask `outl_actions::property::page_properties`, which was already the owner of that question.
+  Found by reading this command's output next to `outl page render`'s while checking the property-order work below.
+
+- **The Windows ARM64 desktop installer was announced and never built.**
+  `build desktop Windows (aarch64)` failed on every release since the platform was added, with `Target aarch64-pc-windows-msvc is not installed (installed targets: x86_64-pc-windows-msvc)`.
+  The job asked `dtolnay/rust-toolchain` for that target.
+  The runner already has stable for the host, and that action's `targets:` input updates the host toolchain without adding the cross target.
+  The CLI zip for the same triple shipped, because that job runs `rustup target add`.
+  The desktop job does that now, so the next release attaches `outl-desktop-windows-aarch64-setup.exe`.
+- **Two things the screenshots for [#417](https://github.com/outlmd/outl/pull/417) found, both in paint rather than in logic.**
+  The desktop's `+ prop` affordance is a bare `+` where it floats over a block's first line.
+  It is absolutely positioned at the right edge, so the word it spelled covered the last word of any line that reached there, which on a wide window is most of them.
+  Measured: 49.1pt of cover down to 19.6pt, and the `aria-label` and the tooltip carried the meaning the whole time.
+  The page header keeps `+ prop`, because there it sits in the flow with a row to itself.
+  On the phone, the swipe-to-delete panel is inset by a point instead of filling the row's height.
+  A row lands on a fractional y, and a background is rasterised per element, so the panel and the opaque row covering it rounded to different device pixels: a 1px line of red ran along the top and bottom of every row's right edge, at rest, on every block in the outline.
+  Painting the colour on the clipping parent instead looks like the tidier fix and measures worse, widening the same leak to the full row.
+- **A bottom sheet on the phone could grow past the top of the screen, taking its own drag handle with it** ([#364](https://github.com/outlmd/outl/issues/364)).
+  A sheet is anchored to the bottom edge and its height is whatever its content needs, so content taller than the screen puts the first rows above the top edge with nothing to scroll them, and the handle up there too, so the sheet could not even be dragged shut.
+  Reported from a device for the long-press menu, with a photo.
+  The same shape was live in Settings, Reminders, Properties, Insert template, Plugins and the calendar.
+  Each is bounded by the viewport now and scrolls its rows.
+  Landscape is what made it certain rather than marginal: both platforms allow it, which halves the height and nearly doubles the width.
+  The calendar was the worst case, because its day cells are squares in seven columns, so width drives height: on a landscape iPhone the columns came to ~101pt and the grid alone to 627pt inside a 402pt viewport, with the month arrows and the first three weeks off-screen.
+  Its cells are capped at 28rem now, which is wider than any phone in portrait, so a date cell stays a date cell and portrait is untouched.
+  The weekday letters also had no column gap where the day cells did, so the two rows of seven drifted apart from each other across the week.
+  They share one grid now.
+- **A reminder on a block with no text showed up as "(empty block)", or as a bare row with nothing on it** ([#364](https://github.com/outlmd/outl/issues/364)).
+  Writing `remind:: 3pm` on a blank bullet is legitimate, and the reminder fires, but the Reminders list rendered it as a row that looked tappable and advertised nothing.
+  The row now reads "This reminder's block has no text yet. Write something in it and it will show up here.", on the desktop panel and the phone sheet alike, from one shared sentence.
+  It stays a button: on the desktop it opens the page with the cursor on the blank bullet, which is where you want to be when you are told to write in it.
+  Whitespace-only text counts as empty too.
+- **Opening outl on a Windows PC with no WebView2 runtime crashed, and the crash was the only explanation.**
+  Tauri's setup panics with `Failed to setup app: runtime error: Could not find the webview runtime, make sure it is installed`, and that panic is what got filed.
+  The NSIS installer already tries to download the runtime.
+  That does not cover an offline or failed bootstrapper, a runtime removed later, or the program started without the installer.
+  Windows now asks the same question before the window is built.
+  A missing runtime shows a message naming the Evergreen WebView2 runtime and Microsoft's download page, then exits with status 1.
+  A PC that already has the runtime is unchanged, and so are macOS and Linux.
+- **A page that had stopped syncing said nothing in the TUI until you tried to write to it.**
+  Root `CLAUDE.md` invariant 8 refuses to overwrite a `.md` holding content that exists in no op, and that refusal freezes the page in *both* directions until `outl reconcile --ahead-of-log` runs: those lines never reach another device, and a peer's edits never reach this `.md`.
+  The desktop and mobile render a banner for it.
+  The TUI never asked the question, so it had nothing to swallow — opening such a page and reading it looked completely normal, because the file is on disk and renders fine.
+  What is missing is on the *other* devices, which is exactly why the machine you are sitting at has no way to hint at it.
+  Every page open now runs `outl_actions::reproject_stale_md` and a frozen page gets a persistent banner above the outline naming the recovery command.
+  Not a status-line message and not a toast: nothing clears this condition on its own, so a line that scrolls away is the same silence with a delay.
+  It is also the one banner `z f` (focus mode) keeps, because wanting a distraction-free outline is not consent to be told nothing about a page that is saving nowhere else.
+  The page still opens and still shows what is on disk — the guard withheld a *write*, not the page.
+- **The desktop status bar reported a snapshot-boot op count as the whole log.**
+  `ops` is `Workspace::log().len()`, the **resident** log, and a workspace that booted from a snapshot replays only the delta above the cutoff.
+  `outl workspace info` started labelling that in this release; the status bar kept printing the bare number, so the same workspace read `332 ops` in one window and `332 since the last snapshot` in the terminal — and on a graph whose `ops/` holds 228,943, the unlabelled version reads as data loss.
+  `WorkspaceSummary` carries `ops_complete` now, from the same `Workspace::booted_from_snapshot` the CLI and `device_activity` ask, so the three cannot describe one log three ways.
+  A reply with no flag still reads as complete, so an older backend is not retro-labelled as partial.
+- **The TUI never refreshed a page's `.md` from the tree on open**, which is the other half of the same call.
+  A peer's ops land in the op log, not in the `.md`, so a synced-in block sat in the log while the page kept rendering the projection from before it arrived.
+  Issue #166 fixed this for the GUI clients in 2026; the TUI was never wired up.
+- **"1 line in this file were never recorded"** — the GUI banner's plural was baked into the sentence, so the one branch that cannot use it disagreed with itself.
+- **`outl-linux-x64.tar.gz` carried a glibc 2.39 floor it never needed**, so it died with `version GLIBC_2.38 not found` on Debian 12, Ubuntu 22.04 and RHEL 9 — the distros where someone downloads a tarball instead of using a package manager.
+  A glibc-linked binary runs on the glibc it was built against or newer, never older, so the runner image *is* the compatibility floor.
+  `build_desktop_linux` was pinned to Ubuntu 22.04 (glibc 2.35) for exactly this and said so in a comment; the CLI leg was on 24.04, which was an oversight rather than a decision.
+  Both Linux legs are on 22.04 now, and `docs/development.md` → Runner sizing owns the rule so the next bump is made on purpose.
+  The same floor applied to the Homebrew `x86_64_linux` bottle, which is the other thing that binary feeds.
+
+### Changed
+
+- **Property order has one owner, and it is written down** ([#285](https://github.com/outlmd/outl/issues/285)).
+  outl renders `key:: value` lines alphabetically, reorders a hand-sorted file on the next projection, and that was never documented anywhere — the behaviour lived in eight copy-pasted `sort_by` calls, three of which explained the reason in their own words and disagreed.
+  `outl_actions::tree::sort_in_presentation_order` is the one owner now; every surface calls it (the `.md` renderer, the outline DTO each GUI reads, the parsed outline the from-disk readers build, a backlink row's shallow leaf, the tree-derived index, the clipboard, `outl page prop list` and `outl block prop list`), and [`docs/markdown-format.md` → Property order](docs/markdown-format.md#property-order) says what the order is and why declaration order is not recoverable: `Op::SetProp` carries no slot, so the nearest thing available is each op's HLC, which is the order properties were last *edited* — a peer fixing one typo would reshuffle the block on every device.
+  A ninth copy fails `crates/outl-actions/tests/property_order_owner.rs`.
+  Nothing a user sees changed; what changed is that it can now be changed, or argued with, in one place.
+- **`outl doctor` counts the stale pages that lose nothing instead of printing one line each** ([#286](https://github.com/outlmd/outl/issues/286)).
+  A 2,865-page workspace bulk-edited outside outl reported 908 warnings, 840 of them the same sentence with a different path, and the two findings that mattered were somewhere in the middle of it.
+  Those 840 are now one line with the count and five example paths.
+  **A stale page whose re-projection would remove content still gets its own line with its own line count, always** — that is the page with something to decide, and the asymmetry is the design rather than a threshold (`a_page_that_loses_content_is_named_even_while_the_harmless_ones_are_counted`).
+  The human listing also caps the repairable items and the completed repair actions at 20 and says how many it withheld; `--json` still carries every one.
+  A **skipped** repair action is never capped: a refusal the user does not hear about is the silence the refusal exists to prevent.
+- **`outl workspace info` no longer reports a partial op count as a total.**
+  It printed `ops: 332` for a workspace whose `ops/` holds 228,943, because a snapshot boot replays only the delta above the cutoff and that is what `Workspace::log()` holds.
+  Three orders of magnitude, on the command a user runs to ask how big their graph is, reads as data loss.
+  The count is still the resident one (parsing 134 MB to print one number is `outl doctor`'s job, not a summary's), but it now says `ops: 332 since the last snapshot` and the JSON carries `ops_complete: false`.
+  `outl_actions::activity` had already written that rule for `DeviceActivity::complete`; this command was breaking it.
+
+- **A release publishes on what is on the draft, not on whether every job went green.**
+  The gate was `needs.<job>.result == 'success'` per build job, which made every job a single point of failure for every other job's assets: one architecture's bundler, or one flaky runner, and a release with 25 finished artifacts published none of them.
+  This repo's own workaround for the Android APK was the opposite extreme — absent from the conditions, so a missing APK published in silence, and the same shape produced a v0.12.0 draft with zero assets that nothing complained about.
+  Both are gone. `scripts/release_assets.py` says which assets a release must carry, and the pipeline reads it in three places: an optional leg carries `continue-on-error`, which keeps the run from going red; `publish_release` reads the draft's assets and no job results at all, failing on a missing required asset and publishing a missing optional one *with the gap named in that release's own notes and in the run summary*; `update_tap` moves a manifest only when every asset that manifest points at is present.
+  The middle one is the load-bearing part, and it is why the gate is written against assets rather than against `needs`: whatever conclusion a half-failed matrix reports, the question "is this release complete" has one honest answer and it is on the draft.
+  That last one is why a missing Windows `arm64` zip stops the Scoop bump but not the Homebrew one: a manifest with a new version and the previous release's digest is a hash mismatch at install time, which is worse than a manifest that still points at a release that exists.
+- **`build_desktop_windows` is one job with an architecture matrix too**, and both legs now pass `--target` explicitly.
+  The x64 leg built for the host and read `target/release/…`; keeping that while adding a cross-compiled `aarch64` leg would have meant two output layouts to keep straight in five steps, so both read `target/<triple>/release/…`.
+- **`build_desktop_linux` is one job with an architecture matrix**, not one job per architecture.
+  The alternative was a second 250-line copy of the AppRun seeding, the Sentry upload, the three bundlers, the rpm's release-string rewrite and the strip gate — five things that have to agree across architectures and would have been free to drift.
+  Both legs gate the release: a broken `aarch64` leg holds the macOS, Windows and x86_64 assets back too, because install docs that promise an architecture and a release that quietly omits it is the worse failure.
+  `release.yml` dispatched with `dry_run: true` is how a change to that job gets exercised before it can do that.
+- **The classification behind that banner has one owner instead of one-and-a-half.**
+  `outl_actions::ProjectionRefusal` is the split between "this page has stopped converging and only a command fixes it" and "an I/O condition the next open retries out of"; `reproject_stale_md` is the page-open call every client makes.
+  It used to live in `outl-tauri-shared`, which the TUI cannot depend on — so the client with the hardest failure mode had no verdict at all.
+- **The wording behind it has a Rust owner too**: `outl_actions::refusal::ahead_of_log_notice`, including the per-surface recovery sentence (a phone has no `outl` binary; every other surface is sitting in a shell).
+  `@outl/shared`'s `aheadOfLogNotice` is now a declared mirror rather than the sole copy, and the two facts a user acts on — the headline and the command — are pinned across the language boundary instead of trusted.
+  `RECONCILE_COMMAND` in the TypeScript was a second spelling of `AHEAD_OF_LOG_RECOVERY_COMMAND` with nothing holding them equal.
+- **The TUI theme gained a `destructive` slot**, read from `Palette::destructive` — the field the GUI banner for this same condition was already painted from.
+  Two surfaces picking their own red for one fact is how a theme ends up meaning different things per client (invariant 13).
+
+- **A page name written in Chinese, Japanese, Korean, Cyrillic or any other script got no page of its own.**
+  `[[你好]]` and `[[世界]]` opened the same page, `#中文` and `#笔记` landed on it too, and `[[Rust 笔记]]` opened `[[Rust]]`.
+  `slugify` kept ASCII letters and digits plus a fixed table of folded Latin letters, turned everything else into `-`, and fell back to `untitled` when nothing survived.
+  A page's NodeId derives from its slug, so this was never a filename clash.
+  Every such name was one node, which merged the content and the backlinks of all of them, and two devices each creating a different Chinese page wrote into that same node.
+  Latin letters the table has no entry for (`ł`, `ř`, `ş`, `ộ`) were dropped the same way, so distinct Polish, Czech, Turkish or Vietnamese names could collide too.
+  A letter or digit with no ASCII fold now keeps its own spelling, lowercased, so `[[你好]]` projects to `pages/你好.md`.
+  Emoji are not letters and still collapse, so `ship 🚀` is still `ship`.
+  The name is normalised to NFC first, because the slug decides the NodeId, and macOS hands back NFD while a Korean IME composes Hangul out of jamo.
+  Without that, one name spelled two ways would mint two pages that look identical on screen.
+  The normalisation runs in both directions: `reconcile`'s `slug_from_md_path` NFC-normalises the filename stem it derives a page id from, which was safe to skip while every slug was `[a-z0-9-]` and is load-bearing now, since a stem that comes back decomposed would mint a second page root for a page that already exists and nothing merges two spellings of one name.
+  `ẞ` (capital sharp s) folds to `s` for the same reason: the table held only its lowercase form, so the slug of a slug differed from the slug.
+  Lowercasing goes through uppercase, because a case-insensitive filesystem (APFS and NTFS, both by default) compares names by uppercasing them, and 21 groups of characters are each already lowercase, stay distinct under a plain `to_lowercase`, and share one uppercase form.
+  `µs latency` and `μs latency` (micro sign against Greek mu) were two pages, two ids, and one `.md` to hold both, so one silently overwrote the other. Same for `s`/`ſ`, `ς`/`σ`, the Turkish dotless `ı`, the Greek symbol variants and the Old Cyrillic letters.
+  Both properties are pinned over all 1,114,112 codepoints rather than over the cases anyone thought of, since `ẞ` is not a shape a hand-written test reaches.
+  Two names that differ only by an accent the fold table has no entry for are still two pages: `CAFÉ` and `cafe` are one, `ΛΟΓΟΣ` and `λόγος` are not. That is the table's Latin scope, not a case problem.
+  Keeping the characters made the 255-**byte** slug cap reachable, by a sentence a user would plausibly type: 255 bytes is 255 ASCII characters but only 85 CJK ones, and `open_or_create_by_ref` promises never to bubble `invalid …` back to a tap.
+  A slug over the cap is now cut on a character boundary with a digest of the whole slug appended, because truncating alone would put two long names on one node, which is this same bug in miniature.
+  The cut leaves room for the filename the slug becomes, which is not the slug: every write renames `.<slug>.outl.tmp` over its target, ten bytes longer. A slug filling the whole 255-byte component would commit a page to the op log that no device can ever project, which is worse than the refusal it replaced.
+  `outl plugin init` with such a name is still refused, and says what it needs: that slug becomes a reverse-DNS label in the plugin id, which accepts only `[a-z0-9-]`, and the refusal used to come for free from the name slugifying to `untitled`.
+  A page that has already merged into `untitled` still opens under the name it was given, through the resolution ladder's title match.
+  The content written into it cannot be split automatically: the merged blocks never recorded which of the names they were meant for.
+  [Issue #405](https://github.com/outlmd/outl/issues/405).
+- **An Android crash report did not say which build it came from.**
+  The APK's `versionName` was the base version, so every beta of 0.13.0 reported `0.13.0`, and `versionCode` was Tauri's semver derivation, which ignores the prerelease and gave all of them `13000`.
+  The reasoning was that the Release tag carries the beta string, which it does, except the tag stays on GitHub while the APK goes to a phone.
+  [Issue #401](https://github.com/outlmd/outl/issues/401) arrived as a `SIGABRT` from `Version='0.13.0'`, a range of builds that straddled the `ndk_context` fix the reporter needed.
+  Identifying it meant matching the tombstone's symbol address against the `.so` inside each published APK until one lined up (beta.256).
+  The APK now carries the full version, `-beta.N` included, and `versionCode` is the run number that names the beta, so beta.261 ships `versionCode=261`.
+  This only brings the manifest in line with Sentry, whose release already came from `CARGO_PKG_VERSION` and already had the beta.
+- **Typing with a Chinese, Japanese or Korean keyboard inside `[[…]]` corrupted the block on iOS.**
+  Five pinyin keystrokes in an empty page ref left `[[]]nihao]]niha]]nih]]ni]]n]]` in the block, one `]]` per keystroke, with the pinyin stranded behind as plain text.
+  The same keyboard outside a ref was fine, which is what made this look like a ref bug instead of an input one.
+  Those keyboards type into *marked* text, and WebKit reports the caret at the **start** of that run while the `input` event fires.
+  The two characters left of it were therefore the `[[` typed before the keyboard was switched and the two on the right were the pinyin, which reads exactly like an unclosed ref, so pair completion appended a second `]]`.
+  Assigning that new value then committed the marked run as plain text, the keyboard restarted a composition at the parked caret, and the next keystroke did it again.
+  Pair completion now sits out any composition, including the event that ends one, and `((…))` is covered by the same guard.
+  Skipping it costs nothing, because the pair is already closed on the keystroke itself, which is why the desktop has never run it.
+- **The Android app closed on open on every device, and the 16 KB page-size fix was hiding it.**
+  `liboutl_mobile_lib.so` loaded correctly and the process aborted a moment later inside `Rust_onCreate`, so the symptom read exactly like the 16 KB bug fixed in 0.12.0-beta.227: an icon that flashes and closes.
+  It was a second defect standing behind the first, unrelated to it, present since the Android app first ran, and reproducible on a 4 KB-page emulator.
+  `ndk_context::initialize_android_context` must be called exactly once and enforces that with an assert.
+  `android_jni.rs` called it from `MainActivity.onCreate` to prime iroh's system-DNS reader, and `tao` calls it again from `Rust_onCreate` with the same application context, so the assert tripped, the panic unwound into an `extern "C"` frame, and `panic_cannot_unwind` aborted the process.
+  `tao` owns that global now, and this crate primes only the `rustls-platform-verifier` handle that nothing else primes.
+  The DNS reader still finds its context: `tao` seeds it inside `super.onCreate`, well before the transport opens a connection.
+  A device that refused the `.so` never reached this code, which is why the earlier fix looked like it had worked.
+
+## [0.13.0]
+
+### Added
+
+- **Block properties on the CLI and over MCP.**
+  `outl block prop set|get|list|delete` and the matching `outl_block_prop_*` tools read and write a block's `key:: value` lines through `outl_actions::set_property`.
+  `delete`, and `set` with an empty value, remove the key, so the rendered page does not keep a bare `key::` line.
+  A value with a newline, a carriage return, or a null byte is rejected, so it cannot split that line.
+- **outl reports crashes, on by default, and your notes are never part of it.**
+  A client that breaks on a device we do not own breaks silently: there is no server and no log, and the only signal was a user who cared enough to open an issue.
+  The Android app that closed on open on 16 KB devices is the shape of it.
+  When outl crashes it now sends the crash to Sentry, which is how a crash on a device we do not have gets fixed, and by sending it you are helping improve the product.
+  A report carries the client name, version, OS, CPU architecture, the file name and line where the panic happened and the panic message after a scrubber has removed paths, page identifiers and anything `std` quoted back at us.
+  It never carries page titles, block text, file paths, hostname, username, environment variables, your IP address, or any identifier that persists, so two reports cannot be tied to the same person.
+  Note data is private and is not sent.
+  Only panics are reported, not handled errors, performance data or usage events, and there is still no analytics.
+  Builds you compile yourself contain no Sentry key and report nothing, and no client reports from inside CI.
+  If the config file holding your choice cannot be read, nothing is sent: that file is the only record of your answer, and the default is the opposite of what someone who turned it off asked for.
+  The first time the desktop or mobile app opens after this, a strip at the bottom says so and names where to switch it off, and it stays dismissed once you dismiss it.
+  The terminal does not announce it that way, which is recorded as a gap rather than fixed: printing into somebody's pipeline is its own defect, so `outl telemetry status` and the published policy are the terminal's disclosure for now.
+  To turn it off, use Settings, Privacy on desktop and mobile, or `outl telemetry off` in the terminal (`status` and `on` are there too, and `OUTL_TELEMETRY=0` silences one run).
+  `docs/privacy.md` used to say there would be no crash reporting and, later, that it would be opt-in; it now describes what ships, which is opt-out.
+  The App Store declarations move with it: App Privacy declares Crash Data and Other Diagnostic Data, neither linked to you, purpose App Functionality, `PrivacyInfo.xcprivacy` carries the same two, and the Play Data Safety form is in the Android release checklist.
+  Crashes in Kotlin or Objective-C code are not covered, only Rust ([RFC 0377](docs/rfcs/0377-crash-reporting.md)).
+
+### Changed
+
+- **The workspace builds with Rust 1.99.**
+  `rust-toolchain.toml` pins 1.99.1, and the workspace `rust-version` is 1.99.
+  wasmtime 49 needs rustc 1.96, so the sandbox moves to wasmtime 49.0.3 in the same change.
+  That is the release after 49.0.2: same major, with the later security fixes.
+
+### Fixed
+
+- **A read no longer mints a write actor.**
+  `outl workspace info` beside a running `outl serve` took the per-actor write lock, lost it, and left a fresh `ops-<ulid>.jsonl` on every poll.
+  Each of those actors is an entry in every sync handshake and every snapshot cutoff, and nothing reclaims the identity.
+  A read now opens through `outl_ws::open_read`: no write lock, no new actor, and an append is refused.
+  `outl doctor` reports the actor-log count and warns once this device's write locks pass a threshold.
+  The files already on disk stay.
+  Rewriting an actor id would change the HLC tiebreak.
+  See [RFC 0298](docs/rfcs/0298-read-opens-do-not-mint-actors.md).
+
+- **Deleting a page property no longer leaves a bare `key::` line in the `.md`.**
+  `outl page prop set hb foo=` stored an empty string, and `render` wrote that back as `foo::`.
+  `prop get` then returned `""` while the file had no line, so a reparse or a peer rebuilding from the `.md` dropped the key.
+  A blank value on `outl page prop set` (MCP `outl_page_prop_set`, batch `page_prop_set`) now removes the key, the same way `outl page prop delete` does: `Op::SetProp` with no value.
+  `prop get` afterwards returns `PROP_NOT_FOUND`.
+  The projection still skips an empty or whitespace-only value, so an older log that already holds `Text("")` stops appearing on disk.
+  `outl doctor` reports that leftover line as a stale projection, and `--repair` rewrites the page without it.
+
+- **The Android app says why when it cannot start, instead of closing on open.**
+  When a device refuses the app's native library — the 16 KB page-size failure above, or an ABI the APK does not carry — the load error surfaced inside Tauri's own startup and killed the app with nothing on screen.
+  The app now checks the library first and, if it did not load, shows a screen saying so, with the device's ABI and page size and a link to the issue tracker, and logs the same facts to logcat under `outl`.
+  Nothing after the check touches the library: the share target, the background sync worker and the activity itself all stop short of it.
+
+- **`@outl/plugin-sdk` publishes to npm again.**
+  npm was stuck at `0.12.0-beta.217`: every release since 2026-10-14 failed the publish job with `E404` on the `PUT`.
+  The npm token in the `release` environment had reached npm's 90-day cap for write tokens, and a newer repo-level token never reached the job, because an environment secret shadows a repo secret with the same name.
+  The job now publishes through npm trusted publishing (OIDC) on a GitHub-hosted runner, so there is no token to expire, and every version carries a provenance attestation.
+
+- **The Android app no longer crashes on open on a phone with 16 KB memory pages.**
+  Some Android devices page at 16 KB rather than 4 KB — the Pixel 8 and 9 families as a developer option, newer hardware by default — and there `dlopen` refuses a library whose LOAD segments are aligned to 4 KB.
+  The refusal lands on the first `System.loadLibrary`, in `MainActivity.onCreate`, so the app died before running a line of its own — on a device where nothing else was wrong.
+  Our Rust `.so` was the only one in the APK built that way; the two vendored `.aar` libraries beside it were already 16 KB aligned.
+  Neither the NDK nor rustc passes `max-page-size` for a cargo build, so the APK was correct everywhere pages are 4 KB and unusable everywhere they are not.
+  The flag now lives in `.cargo/config.toml` for both 64-bit Android targets, `zipalign` page-aligns to 16 KB instead of 4, and the release job reads the finished APK back and fails if either stops holding.
+
+- **A capture no longer loses its text when the app is killed mid-drain.**
+  Landing a capture is two separately-fsynced ops: create the block, then write its text.
+  Nothing batched them, so a process killed between the two — iOS jetsam, a `SIGKILL`, power loss — came back with the block in the tree and empty.
+  The guard that makes a drain idempotent read "the block is there" as "the capture landed", returned success, and the drain deleted the file.
+  The line then existed nowhere, and the app said `added 1 capture to your journal`.
+  A capture whose block is **empty** now has its text re-applied before the file is deleted.
+  Empty, not merely different: the same capture file reaches a second device over a `file` transport, so re-applying whenever the text diverges would let that second drain overwrite an edit the user made after the capture landed.
+
+- **A shared selection is one block again, and cannot forge page structure.**
+  "A capture is one line" was enforced where captures are written and assumed where they are read.
+  Two paths got past it.
+  `shared_line` collapsed newlines in the text but only trimmed the URL, and Android's share target puts the shared `EXTRA_TEXT` in that slot whenever a subject is present — so sharing a multi-line selection from a browser composed a line with newlines still in it.
+  And any writer outside the Rust crate (an iOS Shortcut handing the App Intent a paragraph, a capture file synced in from a peer) was landed verbatim.
+  That is not cosmetic: the renderer turns a newline into an indented continuation line, and the parser reads those back as tree structure and `key:: value` properties.
+  One multi-line capture became several blocks plus a `title::` nobody typed, and the capture's own block was moved to the trash as an orphan on the next reconcile.
+  Normalisation now happens where the bytes are **read**, so a file written by an older build or another device gets it too.
+
+- **Captures that cannot be read are reported instead of vanishing.**
+  An unreadable or malformed capture file is left in the inbox by design, but nothing said so: the desktop and phone said nothing unless something landed, and the TUI returned silently in exactly the case where *every* file in the inbox was broken.
+  The only trace was a log line nobody reads.
+  All three clients now name the count, the TUI names the folder, and `outl capture --list` points at the folder rather than at `outl doctor`, which has no inbox check.
+  A capture file over 1 MiB — which no single line is — is refused the same way instead of being read on every return to the foreground, forever.
+
+- **Tapping "+" on the phone leaves you typing, instead of staring at an empty bullet.**
+  A new block appeared and its textarea really was focused — the accessibility tree said so — and no keyboard came up, so the one gesture the app exists for ended in a dead end.
+  WKWebView raises the software keyboard only for a `.focus()` that happens inside the tap's own user-gesture window, and creating a block is two awaits deep: commit whatever draft is open, then `create_block` over IPC.
+  By the time the new block's textarea mounted and focused itself, the gesture was long gone.
+  The block still comes from `create_block` — nothing is faked, and no keystroke is ever held against an id the op log did not issue.
+  What changed is that the tap now focuses a real off-screen input *synchronously*, which raises the keyboard, and the new textarea takes over when it mounts: iOS reads that as a move between two text inputs and leaves the keyboard up.
+  Anything typed during the round-trip is carried into the new block rather than dropped.
+  Fixed on every path that creates a block with the keyboard down — "+" on today, "Add a block", "Tap to start writing", the first-run tips, long-press "New block above", and the quick-capture sheet.
+  Return inside a block and the keyboard bar's "New line" were never affected: the keyboard is already up there, and those paths are left alone.
+  [`docs/mobile-ux.md` → Making a block and typing in it](docs/mobile-ux.md#making-a-block-and-typing-in-it-the-keyboard-handoff) owns the mechanism and the per-path table.
+
+- **The desktop keeps taking keystrokes while backlinks load.**
+  Backlinks are an `O(blocks-in-workspace)` scan and the *page* carried the loading state for it, so on a large workspace a navigation put the whole view in a load state: the outline stopped accepting input, with the caret wherever it happened to be.
+  The fetch itself was already off the page-open path since the "Esc is slow" fix; what was missing was a smaller place for "still loading" to live.
+  All three fetch sites (navigation, a peer refresh, toggling a task from a backlink row) now go through one `trackBacklinks`, and the backlinks section is the only reader of the pending flag: it shows its own `loading…` mark plus placeholder rows on a first load, and keeps the rows it already has through a refetch rather than blanking them.
+  [`UX.md` → Never block a keystroke](UX.md#2-never-block-a-keystroke) owns the rule now, because the written version covered writes only, and the read half is where it broke.
+
+- **The journal heading speaks one language, and the desktop header stops competing with the page.**
+  `journalHeading()` writes `Today` / `Yesterday` / `Tomorrow` in English and handed the date to the host's locale, so a macOS pt-BR machine read `Today 12 de outubro de 2026` in the desktop header, and any day further out read `quinta-feira` — where the accent rule looks for the literal `Today`.
+  The default now formats from the module's own month and weekday names; a caller that wants another language passes a locale and owns translating the three relative names too.
+  Every assertion that named `en-US` passed throughout, which is why nothing caught it: under `LC_ALL=pt_BR.UTF-8` the locale-free test fails on the old code and passes on the new one.
+
+  The header also loses the rule under it, which read as two stacked panes rather than a title belonging to the outline below it, and the `📎 Attach file` button moves out of the content column into the eyebrow next to page history, as a line icon.
+  A labelled button floating over the first block was the last thing between the title and the text the page is about.
+  The link and asset chips (`MarkdownInline`) and the namespace rows (`NestedPages`) drop their own emoji fallbacks for the same line icons, so `PageGlyph` is the only place that decides what a page looks like.
+
+- **Sync and serve logs name a peer by its alias, not by hex alone, and `outl sync` names each one in its summary.**
+  Reported and first implemented by [@frigidplatypus](https://github.com/frigidplatypus) in [#353](https://github.com/outlmd/outl/pull/353); the `display_label` shape, the per-peer `outl sync` summary and the labelled unpair line come from that PR.
+  Pairing stores a human name for every device, `outl peer pair` defaults it to the hostname, and `outl peer list` renders it.
+  Nothing in the log path read it.
+  So on a two-laptop setup every line read `delta sync: received 14 ops from b75b908373`, and finding out which machine that was meant opening `peers.json` ([#337](https://github.com/outlmd/outl/issues/337), reported with a working patch).
+  A line now reads `macbook-pro (b75b908373)` — the alias plus the same short hex it always carried, so a prefix grepped out of an older log still matches.
+  An id with no alias stays exactly as it was.
+
+  Three groups of call sites keep printing hex, and `crates/outl-sync-iroh/src/peer_label.rs` records why rather than leaving it to look like an omission: this device's own node id, since `peers.json` lists the other devices and not self; a dialer `authz` just refused, which is refused *because* it is unlisted (and its two failure arms cannot read the file at all); and `SyncProgress.peer`, a wire field the desktop prefix-matches to resolve an alias client-side, where widening the value would break the match.
+
+  **The alias is remote input, and the label treats it as such.** A peer sends its own alias in its pairing payload, the membership gossip merge persists one for a device this machine never paired with, and nothing on either path validates it — the only bound was the 64 KiB payload cap.
+  Routing it into the log stream is what made that matter: `peer list` printed it in a column when the user asked, whereas a sync line is emitted continuously, parsed by `grep` and log shippers, and read in an unattended `outl serve`.
+  Measured before the fix, an alias of `"laptop\n2026-… WARN outl_sync_iroh::authz: refusing an unknown / revoked peer"` produced a genuine second log record attributed to another device; `\x1b[2J\x1b[H` cleared the terminal of whoever was tailing; a 64 KiB alias printed 65,549 characters per line, on every pass.
+  `log_label` now drops control characters and the bidi overrides (not control characters, but they reverse what the operator reads) and caps the alias at 64 characters.
+  An accent, a kanji and an emoji still render — a whitelist would have mangled a legitimate hostname.
+  Each vector has a test.
+
+  Three things changed on the way in.
+  The short hex is 10 characters, matching `fmt_short()`, because the whole grep-correlation promise rests on the aliased line and an un-aliased one naming the same prefix — 8 would have matched neither.
+  It is derived by *parsing* the stored id rather than slicing it: `EndpointId::from_str` also accepts the BASE32_NOPAD spelling that `lan::instance_label` publishes over DNS-SD, and a byte slice of a multibyte id panics.
+  And `display_label` is sanitized like the log shape, because `outl sync` prints it with `println!`, which escapes nothing at all.
+
+  The summary reads `online (34ms)` / `offline` rather than a tick and a cross, which is the vocabulary `outl peer status` already uses — two spellings of one fact is how a user learns to trust neither.
+
+  A test counts every `fmt_short` in the crate against that table, because the list alone did not hold even once: the asset pull reused its wire-field hex in three log lines — one of them the `warn!` that fires on a peer serving bytes that fail their content hash, which is the single line an operator most needs to pin to a machine — while the snapshot pull next to it, same signature, was converted.
+  Nothing failed.
+
+- **Imported data carrying a backslash no longer gains a column.**
+  `escape_cell` turned `|` into `\|` and left `\` alone, so a spreadsheet cell holding `foo\|bar` — sed/grep alternation, ordinary data — became `foo\\|bar`: an even backslash run, which the parser reads as a real delimiter. Three cells where the user had two, with every later value under the wrong header, written to the op log. The producer now doubles a literal backslash and `unescape_cell` collapses it, so the two are a real pair. The same bug reached the TypeScript side through a `<code>` cell, since Turndown escapes `\` in a text node but deliberately not inside code.
+
+- **Mobile: a nested block could not paste with formatting, and a property chip edited nothing.**
+  Two props were declared on `BlockRow` and never forwarded — optional, so omitting them compiled. `onSetProperty` never reached `<BlockBody />`, so tapping a `key:: value` chip was a no-op on *every* block; and the recursive `<BlockRow />` dropped both it and `onPasteMarkdown`, so any block below the top level fell back to the browser's literal splice. Found while closing [#329](https://github.com/outlmd/outl/issues/329): it is what made pasting a spreadsheet range into a nested block produce a wall of tabs instead of a table.
+
+  `BlockRow.recursion.test.ts` now fails on the next one. It reads the JSX and asserts every declared prop is either forwarded or listed with a reason, because that is the defect's actual shape — rendering this component needs haptics, a Tauri bridge and a WKWebView-shaped textarea, and a test mocking all three would pin the mocks.
+
+### Added
+
+- **Mobile command palette, and one look across desktop and phone.**
+  Type `>` in the phone's Search or Pages sheet to list actions (today, capture, tasks, reminders, calendar, sync, devices, plugins, settings, fold); a plain query shows matching actions under the pages, as the desktop palette does.
+  Block text and its edit box share one line height on both clients, so rows keep one rhythm and no longer jump when you start editing on the phone; task boxes use the theme's task colours on the phone too; the phone's debug footer (block and op counts) is gone, as it never was on desktop.
+- **Android: capture without opening the app.**
+  Share text or a link to outl from any app, tap a home screen widget, or pull down a quick settings tile.
+  Same hand-off iOS uses: a share lands as one `<ULID>.json` in the inbox and the app drains it into the journal for the day it was captured; the widget and the tile write nothing at all, they open `outl://capture`.
+  That scheme now has an intent filter on Android, which it did not before, so `outl://` links from anywhere open the app.
+  One difference from iOS, and the platform forced it: Android components run in the app's own process with the Rust library loaded, so the share target writes through `outl_actions::capture` rather than a second copy of the file format. Kotlin holds the folder and the strings, nothing else.
+  It also needs no "a capture arrived" notification, because a share sheet belongs to the app you are in, so outl is never on screen when the write happens ([docs/android-platform.md](docs/android-platform.md), [#363](https://github.com/outlmd/outl/issues/363)).
+
+- **`outl capture` puts a line in the journal from a terminal, without opening the workspace.**
+  `outl capture "ring the dentist"`, or `-` to read it from stdin. It lands in the journal for the day you captured it the next time a client is open: the desktop drains on launch and on window focus, the TUI at launch. `outl capture --list` shows what is still waiting.
+  This is what gives a desktop a capture gesture at all, since none of a macOS Service, a Shortcut, Raycast or a hotkey daemon can hold a workspace open. outl registers no such gesture itself, so you wire the command to whichever you use.
+  `outl daily append` is still the command when you want the block written and syncing before the process exits. Capture buys two things instead: no workspace boot, which is seconds on a large graph for one line, and no op minted under a second actor when a GUI client already holds this device's write actor ([docs/cli.md → Capture](docs/cli.md#capture), [RFC 0363](docs/rfcs/0363-ios-quick-capture.md)).
+
+- **iOS: capture without opening the app.**
+  A home and lock screen widget opens the capture sheet, an "Add to today" App Intent works from Shortcuts, Siri and the Action Button, and a share extension saves text or a link.
+  Extensions never touch the workspace: they drop a `<ULID>.json` into the App Group inbox and the app drains it into today's journal on launch and on a Darwin notification ([RFC 0363](docs/rfcs/0363-ios-quick-capture.md), [#363](https://github.com/outlmd/outl/issues/363)).
+  Release builds unhook the extensions until their provisioning profiles exist; see `crates/outl-mobile/IOS-EXTENSIONS.md`.
+- **Trust you can see: page history, device activity, pending sync and merged edits.**
+  Desktop and mobile show a page's history as a diff you can restore from, what each device wrote, what each paired device still has to receive, and every concurrent edit Yrs merged with a one-step undo.
+  The pending floors and the merged log are device-local and survive a restart in `.outl/state/` (`sync-pending.json`, `merges-<actor>.json`), both capped.
+  The TUI gets the same panel as `:sync`.
+- **Undo steps over a peer's edit and a plugin write.**
+  Each arrives as its own undo step on the page, so `Cmd+Z` never mixes them with your typing.
+- **Plain Markdown export, quick capture from anywhere, focus mode.**
+  `export_markdown` on desktop and mobile; `Cmd/Ctrl+Shift+Space` opens capture on the desktop and `outl://capture` on the phone; focus mode is `Cmd/Ctrl+Shift+F` on the GUI clients and `z f` in the TUI.
+  Arrow keys move through the desktop panels and Settings, and phone sheets close with a drag.
+- **Mobile: a bottom bar, quick capture, a week strip and a task list.**
+  The phone gets a bottom bar with Journal, Search, Tasks and Pages, and a capture button in the middle that always writes to today's journal without moving you off the page you are on.
+  The journal header grows a week strip with a dot on each day that holds text, and a sideways swipe on the header or the strip changes day; rows keep their own swipes.
+  Coming back after 30 minutes or on a new day lands on today, unless a block is being edited.
+  Tasks lists every open TODO and DOING across the workspace, grouped by page, and opens the page zoomed into the task.
+- **Choosing a block from search zooms into it.**
+  On the phone and in the desktop palette, a hit with children becomes the outline root, so the match is the whole view.
+- **outl-light moves to a paper-white canvas.**
+  Pure white background, a neutral gray ink and a deeper violet accent; every role still meets WCAG AA, and the old `status_insert` contrast exemption is gone.
+
+- **Desktop: one palette for pages, blocks and actions.**
+  `Cmd/Ctrl+P` used to find pages only.
+  It now lists pages, then blocks, then the actions that match, each action with its chord, and a leading `>` narrows to actions.
+  `:` and `Cmd/Ctrl+K` in Normal mode open it that way, so `OpenCommandPalette` is no longer a dead key on the desktop.
+  In Insert, `Cmd+K` still inserts a link.
+  A Search row at the top of the sidebar opens it for mouse users.
+
+- **Journal days have names.**
+  The header said `2026-10-11` in 28px mono.
+  It now says Today, Yesterday, Tomorrow or the weekday, with the full date next to it, on desktop and mobile.
+  The ISO slug stays in the eyebrow, because it is the file name.
+
+- **Line icons in the chrome, one popover surface on the desktop.**
+  The 📅/📄/⏱ defaults are SVG line icons that follow the palette.
+  A page's own `icon::` still wins.
+  Autocomplete, property pickers and the switcher share one radius and one palette-derived shadow, and the active row is a tint instead of a solid accent fill.
+
+- **Run either GUI client in a browser with `?mock=1`.**
+  `bun run dev` in `crates/outl-desktop` or `crates/outl-mobile`, then open `http://localhost:<port>/?mock=1`: an in-memory workspace answers the Tauri commands, so the UI can be looked at and screenshotted without a native build.
+  Dev builds only.
+
+- **Markdown tables render as tables, on all three clients — and tabular data pasted from anywhere becomes one.**
+  A pipe table used to arrive as a wall of `|` characters plus one `unrecognized_block_marker` warning *per row*, because the parser had no table in its grammar and kept each line verbatim ([#329](https://github.com/outlmd/outl/issues/329)). The content was safe; it just wasn't readable, and the warnings made a correct file look broken.
+
+  ```
+  - | Route   | Pax | Owner       |
+    | ------- | --: | :---------- |
+    | SP → RJ | 1203 | [[avelino]] |
+  ```
+
+  A table is **not a new block kind** and there is no `Op::Table`. It is a block whose text carries the rows, exactly like a fenced code block and a `> ` quote, so the op log never learns a new shape and the existing continuation grammar already round-trips it. The parser claims the rows as one block and raises no warning — a table is understood, not recovered. The TUI pads the columns and draws `│` separators with a `├───┼───┤` rule row; the desktop and mobile hand the cells to an HTML `<table>` that scrolls sideways inside the block, so a wide grid doesn't stretch the outline on a phone.
+
+  **Cells carry ordinary inline markdown** — `[[refs]]`, `#tags`, `**bold**`, `((blk-…))` — because the backend tokenizes each one (`outl_md::tokenize_table` → `BlockNode.table`). A client that split the pipes for itself would have no tokenizer, and a cell's `[[ref]]` would render as literal text; that is the same bargain `BlockNode.tokens` already made one construct down.
+
+  **Paste**: copy a range out of Excel, Sheets, Numbers, a Notion database, `psql`, or an HTML table on a web page, and it lands as an outl table. Three clipboard shapes, one destination — a `<table>` in `text/html` (Turndown ships no table rule, so `@outl/shared/paste::tableElementToMarkdown` is it), tab-separated `text/plain`, and a markdown table copied from a README or an assistant's reply. All three converge on the same markdown before anything is written, so there is one table reader rather than three. Comma-separated text is deliberately **not** tabular (prose carries commas), and neither is tab-indented code or an outline — that gate also requires no line to *start* with a tab, which is what separates a grid from indentation.
+
+  **A table is recognised by shape rather than by a marker**, which makes it the one construct that can swallow a line meant for something else. Three did, and all three were found by running shapes through `parse → render → parse` rather than by anybody enumerating them: a bullet-looking delimiter row (`- | -`), a `key:: value` row under a table, and a row opening a code fence. Each made the file change on a later save; the first also made the unlogged-content check report a line the op log *does* hold, which withholds `last_synced_hash` and freezes a page with nothing wrong with it — invariant 8's false-positive direction. So `is_row` now refuses every line another part of the grammar owns, and `table_span` asks it of the delimiter row too (a delimiter-shape check alone accepts `- | -`). The lasting fix is the **generator**: `tests/block_text_roundtrip_properties.rs` grew `arb_table_block`, so these three properties now cross the table code on every run instead of relying on someone having thought of the shape.
+
+  **Two deliberate departures from GFM, both in the same direction.** GFM truncates a row wider than its header; outl widens the table and keeps the cell. A short row pads instead of dropping. A cell you can see in your editor and cannot see in outl is the loss this crate exists to prevent.
+
+  **The upgrade path is handled.** A sidecar written before this shipped holds one block *per row*, so the pass that consolidates them into one table block orphans every one of them — on a page that is mostly the table, 100% of its known blocks, which `OrphanGuard` refuses. Unfixed, that freezes the page in both directions and the user sees a repeating reconcile error. It is exempt from the bulk-delete **count** only, through the same `match_blocks_guarded_except` hook the pre-frontmatter migration uses, and with the same kind of predicate: positive evidence, not a bypass. The orphan's text has to *be* a line of a table on disk right now, so a truncated `.md` — the thing the guard exists for — gets no discount, and a row whose cell the user also edited still counts. The rows are still trashed and logged, and `outl trash restore` reaches them.
+
+  **A table is capped at 65,536 materialised cells**, because `columns()` is the widest row and every row pads to it — so a *ragged* table costs `columns × rows`. Measured before the cap: a 17 KB block holding a 4,000-cell header over 400 one-cell rows produced 1.6M cell vectors, a 4 MB wire payload, and a 9 MB string the TUI rebuilt **every repaint**; at 109 KB it is gigabytes. The `.md` arrives over iroh / iCloud / Syncthing from another device, so opening the page was the whole interaction. Past the cap the block keeps its text and falls back to `tokens` — the pipe rows render verbatim, which is what every client did before tables were modelled.
+
+  **outl never reformats a table you wrote.** Re-emitting every table column-padded on read is a whitespace-only rewrite of a hand-written file, and the reconcile that follows turns it into an `Op::Edit` per table — churn in the log for a space nobody typed. Alignment is a *render* decision; `render_table` is for where outl **creates** a table.
+
+  Editing is editing the markdown: no add-row / add-column UI on any client, by design. The one real per-client difference is recorded rather than left to be discovered — `Capability::TableRendering` is `Partial` on the TUI (a table wider than the pane wraps instead of scrolling; every row is still there, the columns stop lining up) and `Full` on desktop and mobile, with the wording the user sees living in the catalog (invariant 12).
+
+- **`outl trash list` and `outl trash restore <id>` — deleted blocks are readable and recoverable.**
+  Invariant 6 makes delete a `Move(node, TRASH_ROOT)`, "simplifies the algorithm and preserves history". The preserving half has worked since day one; the reading half did not exist, so on a real workspace `outl doctor` could report 683 blocks across 393 deletions and nothing else could name one of them ([#287](https://github.com/outlmd/outl/issues/287)). What the invariant bought was "the bytes are still on disk", which is a much weaker promise than "you can get it back" — the difference between a recycle bin and a deleted file on a drive you have not overwritten yet.
+
+  ```console
+  $ outl trash list
+  393 deletion(s) in the trash
+    01KVWQX6G8MAS26T1BENQ61ET7  asdasdasd
+    01KWEVH8CD7YE79RD2AZAJPT5C  dkfjdskjf
+        cannot restore 01KWEVH8CD7YE79RD2AZAJPT5C: the block it was deleted from (01KWEVH5EVX4A533ER9SYBCW8R) is in the trash too — restore 01KWEVH5EVX4A533ER9SYBCW8R first
+  ```
+
+  Also `outl_trash_list` / `outl_trash_restore` over MCP, because an agent that can delete a block should be able to undo it.
+
+  **Where a block came from is folded from the op log, never read off `Move.old_parent`.** That field is the originating replica's local derivation for `undo_op` — on the reference workspace 65,141 of 65,703 stored `Move`s name `root` regardless of where the block actually was, and an append-only log never rewrites them. `trash::parent_at_deletion` is the single owner of that fold, and `timeline::came_from` now calls it instead of keeping its own. The old copy answered with the *first* page a block was ever deleted from, which was harmless only because nothing could restore a block and delete it somewhere else; shipping `restore` made that reachable, so it is pinned by `a_deletion_is_attributed_to_the_page_the_block_left_last`.
+
+  **The listing and the mutation share one verdict** (`trash::refusal_for`). A listing that decided "restorable" for itself is a second owner of the rule, and it drifts towards promising a restore that then fails — the same shape invariant 8 applies to which pages are safe to overwrite.
+
+  **A restored block lands as the last child**, not in the slot it held: `Move.old_position` carries the same caveat as `old_parent`.
+
+  **Two things are deliberately absent.** Restoring a **page** needs a re-projected `.md` on top of the `Move`, and 16 of the 18 deleted pages on that workspace have their slug taken by a live page today — inventing a free slug would make this a second owner of the slug rule, so it refuses and points at `outl block tree <id>` (`outl page history` resolves only live slugs, so it cannot find a deleted page and shows the replacement's history when the slug was reused). And there is no **`trash empty`**: it is the only operation here that actually destroys, so it belongs with op-log compaction ([#110](https://github.com/outlmd/outl/issues/110)). Retention is "forever until that lands", which is a policy — `docs/cli.md` now states it rather than leaving it to be inferred.
+
+  No client has a trash surface yet. That is recorded as `Capability::Trash` rather than left to be discovered, and it needed a new mechanism: `no_capability_is_out_of_reach_on_every_client` is right that a capability nobody reaches is normally a feature that does not exist, so a CLI-only capability is a declared row in `outl_shortcuts::CLI_ONLY` with its reason — the shape `outl-tauri-shared`'s `DECLARED_GAPS` already uses — instead of a weakened assertion.
+
+  Measured against the 393 deletions on that workspace: 286 restorable, 89 refused for a trashed parent, 18 refused as pages.
+
+  **Two things the fold has to get right that are not obvious.** Invariant 4 keeps a `Move` the tree **refused as a cycle** in the op log, so a fold that replays `new_parent` unconditionally disagrees with the tree on exactly those ops, and whether one was refused depends on the tree **when it ran**: `Move(A, B)` with `B` under `A`, then `B` moved away, leaves nothing in today's tree to say so, and a check against it restored `A` under `B`. The fold replays each placement against the ancestors its target had at that instant, the way `do_op` decided it. And `refusal_for` proves the node is in the trash before it folds, so an empty fold could not keep answering "this block is not in the trash": that contradiction is `TRASH_ORIGIN_UNKNOWN` now, which also separates a damaged log from a parent that is merely gone. Pinned by `a_move_the_tree_refused_as_a_cycle_never_becomes_the_origin`, `a_move_refused_into_a_descendant_stays_refused_after_the_descendant_leaves` and `a_block_the_log_cannot_place_is_not_reported_as_untrashed`.
+
+- **Every ` ```query ` filter now has a negative: `not-status`, `not-tag`, `not-prop`, `not-kind`, `not-since`, `not-text`.**
+  The DSL could only say what a block *is*. A workspace with a `#someday` / `#backlog` parking lot mixed into live notes had no way to write "open work tasks, minus the parked ones" — every directive was a positive containment check, implicitly ANDed ([#323](https://github.com/outlmd/outl/issues/323)).
+
+  ````markdown
+  - ```query
+    status: todo
+    tag: work
+    not-tag: research
+    not-tag: someday
+    not-prop: status: parked
+    sort: page, status
+    ```
+  ````
+
+  **There is one negative filter, not six.** `not-<key>` is parsed by parsing `<key>` and wrapping the result in `Filter::Not`, which the engine answers with a single `!` over the positive's own arm. So a fence carrying `tag: x` and `not-tag: x` returns nothing — not because two implementations were kept in step, but because there is only one. Two implementations of "has tag x" drift, and the half that drifts is always the one that silently removes results: a user never sees a block that is missing.
+
+  The shape also means a **future** directive arrives negatable. Add the variant and its match arm and `not-<key>` is live; a hand-written `NotFoo` variant is the thing to refuse in review. `sort` and `limit` are not filters, so `not-sort` is rejected as an unknown key. Pinned by `no_filter_and_its_negation_can_both_match`, which iterates the whole `Filter` set rather than the two that shipped first.
+
+  **`not-since:` is the one that reads oddly**, and deliberately so: `since: 7d` means "a journal dated within 7 days", so its exact complement includes every ordinary page. Read it as `!since`, not as "older than"; pair it with `kind: journal` for the latter.
+
+  **`prop:` shipped in the same change**, and `BlockEntry` now carries the block's `key:: value` pairs (both index population paths already had them; this is a copy, not a second parse). A negation with no positive counterpart is a filter whose complement cannot be written — you could *exclude* every block carrying a `status::` and not *select* one.
+
+  **`prop: key` matches any value; `prop: key: value` narrows.** A dangling colon (`not-prop: status:`) is a parse error, not a wildcard, and so is `not-tag:` with no name. Reading either as "match anything" turns one typo into a filter that drops the workspace, and prints no reason.
+
+  Wired through every surface, with the same one-negative-per-filter rule: the CLI (`--not-tag`, `--not-prop`, `--not-kind`, `--not-since`, `--not-priority`), the MCP tool (`not_tags`, `not_props`, `not_kind`, `not_since`, `not_priority`), the JS/plugin SDK (`outl.query({ notStatus, notTag, notProp, notKind, notSince, notText })`), and `QueryParams`.
+
+  **The CLI and MCP pair filters pages, not blocks, and they are a different matcher — deliberately.** `outl query --tag=ops` asks whether the page's subtree mentions `#ops` exactly and case-sensitively; the fence's `tag: ops` also answers for `#ops/deploy` and ignores case. A property filter is spelled `key=value` on the CLI and `key: value` in a fence. What holds on *both* is the law that matters: each negative is the exact complement of the positive **on its own surface**, so `--tag=x --not-tag=x` returns nothing and so does `tag: x` + `not-tag: x`.
+
+  **Every way of writing one of these filters that could not possibly match now fails loudly**, because the direction a negative filter fails silently is the one that hands back the rows you asked to hide. Rejected: an empty tag or an empty `text:` needle on any surface; a tag name outside the tokenizer's alphabet (`not-tag: research # parked` has no trailing comment in this DSL, so the whole tail was the name); a property filter with an empty value; the fence's `key: value` separator passed to the CLI's `key=value` flag; a non-string entry in an MCP `not_tags` / `not_props` array, and a non-string `tag`, both of which used to drop the filter and return the workspace. `--tag '#work'` and `not-tag: #work` are accepted — the hash is how the tag is spelled everywhere the user sees it.
+
+- **"Open With → outl" on the desktop — a `.md` or `.txt` from anywhere becomes a page.**
+  Right-click a file in Finder / Explorer / a Linux file manager, pick outl, and the file lands as a page titled `open-in/<file name>`, built out of ordinary ops like everything else. `bundle.fileAssociations` registers the four extensions with `role: "Viewer"` and `rank: "Alternate"` — outl **imports a copy and never writes back to the file**, and it must not quietly become the system handler for every `.txt` on the machine.
+
+  **The imported page is linked from today's journal.** A `[[open-in/<name>]]` block lands in the journal for the day it happened, because outl is journal-first and a page reachable only by search is a page you forget you have. It is a ref rather than plain text, so the page answers "where did this come from" through its own backlinks. That dirties two pages for one gesture and `commit_page` is scoped to one ([#264](https://github.com/outlmd/outl/issues/264)), so `import_into` returns `ImportOutcome { page, journal }` and the command projects the journal itself, the same shape a cross-page move already uses. Re-opening writes no second entry, however many times you open the file.
+
+  **The namespace is a title, not a slug, and that is the whole reason it reads as a folder.** `page::is_valid_slug` rejects `/` because a slug is one path component of `pages/<slug>.md`, so `slugify` folds it and the page projects to `pages/open-in-notes.md` — flat. The `/` survives in `title::`, which is exactly what `namespace::descendants` reads, so `open-in` becomes a real parent page listing every file ever opened this way with no new op, no new on-disk field and no migration ([#275](https://github.com/outlmd/outl/issues/275)'s mechanism, reused rather than re-invented).
+
+  **Re-opening the same file navigates; it does not import again.** The page records the canonicalised path in a `page-source::` property. **That property never reaches the `.md`** (it is in `tree::is_page_model_key`): the value is the user's directory structure, a `.md` is frequently in git, and `outl export hugo` copies every property outside its deny-list straight into published front matter, so a visible one put private paths on a public site. Hiding it costs nothing — the check reads the op log, and `outl_md::diff` only emits `SetProp` for properties the `.md` has, so a reconcile cannot clear what it cannot see. Importing twice into one page duplicates every block, and overwriting deletes whatever the user wrote on the page afterwards — so the second open returns the page the first one produced. The same property is what keeps two *different* files named `notes.md` apart: the second becomes `open-in/notes 2` instead of being merged into the first, silently.
+
+  Content goes in through `paste::paste_markdown`, deliberately: a bulleted file lands as an outline, a bullet-free one as one block per non-blank line. A second split rule here would mean the same text behaves one way pasted and another way opened.
+
+  **Three platforms, three deliveries, one destination.** macOS sends an Apple Event (`RunEvent::Opened`); Linux and Windows send `argv`, cold via `std::env::args()` and warm via `tauri-plugin-single-instance`. Two details that are easy to get wrong and are pinned by tests: `RunEvent::Opened` is *also* where `outl://` deep links arrive on macOS, so the router keeps only `file://` (otherwise a deep link navigates twice — once from the plugin, once from here); and a cold-start file arrives before the frontend has a listener, so it is buffered exactly like a cold-start deep link ([#98](https://github.com/outlmd/outl/issues/98)) rather than emitted into nothing.
+
+  **Mobile registers the command and has no way to be handed a file** — no share-sheet or document-type association is declared — and that gap is now a recorded fact rather than a discovery: `Capability::OpenExternalFile` in `outl_shortcuts::capability_support`, which is an exhaustive `match`, so the three clients had to declare a verdict before this compiled (root `CLAUDE.md` invariant 12). The TUI's verdict is `NotApplicable`: a file manager has no terminal process to hand a file to.
+
+- **Monochrome Nerd Font icons in the TUI, opt-in via `[tui] icons = "nerd-font"`.**
+  Every TUI icon — footer chips, fold markers, sidebar glyphs, palette/property/command glyphs — used to render as a colour emoji, with no way to turn that off.
+  Some terminals (alacritty without `font-emoji`, kitty in some configs, most tmux setups) either render them as broken boxes, double them with the surrounding text, or pick a fallback that disagrees with the rest of the UI's typography.
+  There was no supported way to get a compact monochrome outline.
+
+  `[tui] icons` now selects between two sets shipped from one `IconSet` in `outl-tui::icons`:
+  `"emoji"` (the default, byte-for-byte what the TUI rendered before) and `"nerd-font"` (Font Awesome 4 + Material Design codepoints from any patched font).
+  The selection is read once at boot in `runtime::run`, propagated to `App::icons`, and threaded through every view module that renders a glyph.
+  `property_glyph`, `category_glyph`, `command_glyph` and `fold_span` are now methods on `IconSet`, so a per-view "which glyph does this role take" question can no longer be answered twice.
+
+  **Emoji mode is pinned to upstream's literals by an exhaustive test** (`emoji_preserves_the_pre_iconset_glyphs`) that asserts every field value AND every `property_glyph` / `category_glyph` / `command_glyph` arm returns the byte sequence the pre-IconSet code returned.
+  The `📅`/`📆` and `🕐`/`🕒` pairs are split into `calendar`/`week` and `clock`/`stamp` fields for exactly that reason — the Emoji set must keep them distinct (the upstream `/week*` and `/stamp` commands render different glyphs from `/date*` and `/time*`), even though Nerd Font collapses each pair to one codepoint.
+  The mirror test (`nerd_font_uses_only_pua_glyphs`) walks every nerd field and refuses anything outside the three Unicode PUA planes, so a future contributor cannot quietly drop a colour emoji back into the Nerd Font set.
+  The same exhaustive `match` shape on a new Tauri command or wire DTO is what makes those safe; this is the same discipline applied to glyphs.
+
+  The desktop settings modal had a sibling defect on the way out — saving it stomped the `[tui]` block out of the global config because `TuiCfg` was not part of its round-trip.
+  The same hole existed for `[snapshot]` and `[storage]`, neither of which the modal models either: a save silently reset a hand-set boot-cache policy or op-log LRU cap to the defaults.
+  All three are now restored from disk on save, pinned by the extended `save_restores_the_sections_the_desktop_never_models` test.
+
+- **`UX.md` — the behaviour half of the design specification.**
+  `DESIGN.md` was carrying two documents. One of them answered *what it looks like* — roles, tokens, spacing, elevation — and the other, scattered through the Components, Do's-and-Don'ts, Platform-divergence and Accessibility sections, answered *what happens*: what a `Missing` verdict promises the user, why a nudge may not say "unimplemented", why a chord with no handler is worse than an error. The second document had no name, so nothing linked to it and every new interaction rule landed wherever it fit.
+
+  The split follows the [UX-context design](https://www.nngroup.com/articles/ux-context-design/) framing: research findings written as constraints rather than as insights, interaction patterns as rules, and the domain vocabulary written down once so three surfaces stop inventing three names for one operation. `UX.md` now owns the user models (who this is for, what they already know from Roam and Logseq, what makes them leave), the world models (offline for days, asleep during quiet hours, a phone with no `outl` binary and no `git`, a terminal with no OS appearance API, ~2,500 pages and ~64k blocks), eight principles that act as tie-breakers, the five channels a message can land in and which one each condition earns, the voice rules that `DEV_WORDS` already enforces in code, the glossary — including the words we deliberately do not use — and a findings table that traces each principle back to the incident that produced it.
+
+  **Nothing is duplicated between the two files**, per root `CLAUDE.md`'s one-owner rule: the visual half of a shared affordance stays in `DESIGN.md` and `UX.md` links to it. Two facts were also stale on the way out and are corrected rather than copied — the capability catalog has **9** rows, not 7, and the client-behaviour divergences (no chords on mobile, no character cursor on the desktop, `lookup()` reaching only the desktop) now sit in the file that owns behaviour instead of beside the ANSI-preset and colour-field-count rows that are genuinely visual.
+
+- **Nested tags and page namespaces — `#os/linux/debian` ([#275](https://github.com/outlmd/outl/issues/275)).**
+  `#os/linux` already parsed, already resolved, already kept its name verbatim. What it did not do was anything a *hierarchy* implies: the `os` page had no idea `os/linux` existed, and a block tagged `#os/linux` was invisible to it. So the feature looked present and behaved like a coincidence — a page whose name happens to contain a slash.
+
+  Two things now follow from that slash, and they are separate features sharing one source. The parent **lists** its descendants (a "Nested pages" section below the backlinks, every level, indented by depth), and the parent **collects** their mentions (a block tagged `#os/linux` is a backlink of `os` too, through a new `TargetKey::Namespace` channel in the backlink index).
+
+  **The hierarchy comes from the page `title`, never from the slug, and that is the whole design.** A slug is joined into `pages/<slug>.md` as a single path component — `page::is_valid_slug` rejects `/` for exactly that reason — so `slugify` folds it to `-` and `os/linux` lives at `pages/os-linux.md`, flat. The `/` the user typed survives in one place: `title::`. Deriving the tree from there means **no new op, no new on-disk field, no migration**, and a workspace imported from Roam years ago already answers correctly, because the importer has kept namespaced titles verbatim since it shipped (`namespaced_page_keeps_title_and_flattens_slug`).
+
+  **Comparison is per slugified segment, not per string prefix**, and the difference is the feature working versus it being noise. `oscar/wilde` starts with `os` as a string; it is not in the `os` namespace. A `starts_with` would have put every `os*` page on the `os` page and been reported as "nested tags are broken" rather than as a matching bug. The same per-segment fold is what makes `OS/Linux` and `os/linux` one namespace — they resolve to the same page, so they had better resolve to the same namespace.
+
+  **`ancestors` is a *proper* prefix list**, which is not a detail: including the name itself would index `#os/linux` under `Namespace(os-linux)`, and the `os/linux` page would list its own mention twice — once as a tag, once as its own namespace.
+
+  **Exact-tag matching did not move.** `#os` and `#os/linux` remain different tags, and `#projector` is still not `#project`. The parent collects its children's *mentions*; it does not absorb their identity.
+
+  **On file size.** Wiring this touched six files already past the 600-line ratchet, and they came back down by splitting rather than by shortening a comment to sneak under a lint: `backlinks_index.rs` → `backlinks_keys.rs` (the two halves of *what a backlink is*, kept together and apart from the index that stores them), `commands/page.rs` → `page_backlinks.rs` (a concurrency problem, not page navigation), and both GUI clients grew a `PageSections` component owning what renders below the outline. The first two left the baseline entirely (640 → 523 and 721 → 587 lines); `OutlineView.tsx` ratcheted 967 → 963 and `Journal.tsx` 2489 → 2477. The TUI's new accessor went into `actions/namespace.rs` rather than into `nav.rs`, which is why `nav.rs` shows no hunk at all. The one raise is `@outl/shared/src/api/types.ts` (+20), which is the hand-written Rust↔TS wire mirror — growing when the wire grows is its job, and splitting it to save 20 lines would refactor every client's type contract.
+
+  **It did not work on a real graph, and the fix is a repair pass.** The listing half reads `title::`, and a page that arrived as a `.md` has none — `page_meta` falls back to the slug, which carries no `/`. On the author's own 2,575-page workspace that was **14 pages with a title**, so the nested-pages section rendered empty for every namespace while the backlinks channel, which reads the *mention*, credited 3,221 blocks under `buser` alone. The feature looked shipped and delivered nothing.
+
+  `repair_namespaced_titles` recovers it. The namespaced name is still spelled out in every mention (`[[buser/tech/data]]`), and `slugify` maps it onto exactly the slug the ingested page carries — so the pass is a join, not a guess, and it never derives a hierarchy from a slug (`meu-projeto` stays one segment, because no mention ever spelled it `meu/projeto`). It refuses a page that already has a title, and a slug two spellings claim is **reported** rather than decided by a coin flip written into the op log. Both GUI clients run it on the background reconcile pass. Measured on that same workspace: **1 → 100 nested pages**, 175 titles recovered, 3 ambiguities reported, second pass a no-op.
+
+  **The other half needed a cap, for the same reason.** A namespace's mentions have no natural size, and folding 3,221 of them into the backlinks list makes an unreadable panel and puts ~292 KB of block text on the IPC per page open. `BacklinkIndex::for_page_split` separates the blocks that *name* a page from the ones that only mention a descendant; the reply ships the first in full and caps the second at 50 with the real total beside it. Clients render it as its own collapsed section that says "showing 50 of 3,221" instead of implying the list is complete.
+
+  **The TUI lists but does not open.** `Focus` has two variants (`Outline`, `Backlink`) across 36 call sites in 12 files, and a third would be a decision about what `d`, `x` and `i` mean over a page row — so the section is painted without a cursor in it, and the header says to use the picker (`Ctrl+P`) instead of leaving the keys silently dead. Recorded as `Capability::NestedPages` → `Partial`, so the gap is in the generated parity table rather than in a user's guesswork (invariant 12).
+
+- **Two devices on the same Wi-Fi now find each other without the internet.**
+  A peer's address was learnable exactly one way: the n0 relay/DNS-pkarr service, which is an *internet* service. So a laptop and a phone two metres apart had no local path between them. When a device took a new DHCP lease, its stored address in `peers.json` went dead, every dial stalled ~10s on it, and the only fallback was the relay — which is precisely what is slow or unreachable on the networks where this gets reported. The devices show each other as offline and the journal never converges.
+
+  mDNS discovery resolves a peer's **current** address off the LAN itself, so neither the stale stored address nor relay reachability is on the path any more.
+
+  **It is attached after the bind, not on the builder, and that is the whole design.** iroh runs each registered address-lookup builder inside `bind()` with `into_address_lookup(&ep)?`, so an mDNS service that cannot start takes the entire bind down with it — and it cannot start whenever the host allows neither IPv4 nor IPv6 multicast: a locked-down corporate network, a container with multicast off, an iOS sandbox. Wiring it the obvious way would have traded "same-LAN peers cannot find each other" for "sync does not start at all", which is worse and undiagnosable. Attached post-bind, mDNS either helps or logs one line while the relay path carries sync exactly as before.
+
+  **Wiring the service is not the same as the service working, and that differs per platform.** `iroh-mdns-address-lookup` speaks mDNS over a plain BSD socket — `bind` on `0.0.0.0:5353`, then `IP_ADD_MEMBERSHIP` on `224.0.0.251` — rather than through any OS Bonjour API, and that is what decides who needs permission.
+
+  **Android needed a lock, and without it this would have shipped as a feature that does nothing.** The Wi-Fi driver drops multicast frames not addressed to the device, to save battery, and that filter sits *below* the socket API: the group join returns `Ok`, queries go out, answers are discarded before the socket sees them. Nothing errors — discovery just finds nobody, which reads exactly like an empty LAN. `CHANGE_WIFI_MULTICAST_STATE` plus a held `WifiManager.MulticastLock` (`OutlMulticast.kt`) lift it, taken across `onResume` / `onPause` rather than for the activity's lifetime because the lock is a real battery drain and background sync runs off known peers and the relay, which need no multicast.
+
+  **iOS discovers through the system daemon, and that is what makes it shippable.** Since iOS 14 a socket-level multicast join needs `com.apple.developer.networking.multicast`, which Apple grants by request and commonly declines — pointing applicants at Bonjour. So iOS does not join a group: `OutlBonjour.swift` asks `mDNSResponder` to advertise and browse through `NetService` / `NetServiceBrowser`. Apple's Local Network Privacy FAQ names exactly two Bonjour operations that still need the entitlement — **arbitrary** service types, and browsing for advertised service types (the `_services._dns-sd._udp.local.` meta-query). outl does neither: one fixed type, declared in `NSBonjourServices`. There is no entitlement, no request form, and nothing to wait on.
+
+  **All three paths interoperate because none of them invents a protocol.** `swarm-discovery` publishes plain DNS-SD (RFC 6763) — `_irohv1._udp.local.`, instance name = the endpoint id in lowercase base32, TXT `relay=<url>`, SRV + A/AAAA. The label is deliberately **not** `EndpointId`'s `Display`, which is 64 hex characters: RFC 6763 caps a DNS label at 63 bytes, so publishing that fails outright, and because `from_str` accepts both encodings the breakage would have been one-directional and silent (the phone finds the laptop, never the reverse). A laptop advertising through `swarm-discovery` and an iPhone browsing through `mDNSResponder` resolve each other unchanged. Those two constants are the entire agreement, and getting one wrong fails in the way nothing catches — no error, no log, the peers simply never meet — so `the_lan_wire_constants_match_the_platform_bridge` pins them.
+
+  **`outl-sync-iroh` stayed `#![forbid(unsafe_code)]`, and that shaped the design rather than being worked around.** A sync transport should not carry a platform bridge, so the crate exposes a plain-Rust seam instead (`lan::register_advertiser` out, `lan::peer_discovered` in) and the FFI lives in `outl-mobile`'s `ios_bonjour.rs`, beside the background-sync exports that already cross that boundary. The Swift callback is a function pointer handed over at startup rather than a `#[no_mangle]` export, because a pointer passed at runtime cannot be dropped by dead-code elimination.
+
+  One thing a user can still hit: iOS reports **nothing** to an app whose local-network permission was declined, so a denied iPhone looks exactly like an empty LAN. [`docs/sync.md`](docs/sync.md) says where to check (Settings › Privacy & Security › Local Network), because nothing in the app can detect it.
+
+  **`outl peer status` had to be exempted from advertising, and finding out why is the part worth carrying.** Every endpoint in this crate binds under the same device identity, so they all advertise the *same* node id at different ephemeral ports. Harmless for the long-lived ones; not for the probe, which binds, measures and exits seconds later. Advertising it would leave a second address for this device on every LAN peer that is dead the moment the command returns — and iroh 1.0.0 multipath stalls on a dead candidate rather than skipping it. Running a **diagnostic** would have made everyone else's next dial hang for ~30s. It resolves without publishing now (`bind::Advertise`), pinned by `the_status_probe_resolves_without_advertising`.
+
+  One consequence worth knowing: `bind::bind_ipv4_only` is now the only way to get an endpoint out of `outl-sync-iroh`. The IPv4-only STOPGAP was expressible on a shared builder and the mDNS attach is not, so a new endpoint reaching for the builder directly would compile fine and silently have no LAN discovery — invisible, because sync still works over the relay. `every_endpoint_in_this_crate_binds_through_the_one_owner` fails instead.
+  ([#149](https://github.com/outlmd/outl/issues/149))
+
+- **Reminder banners are no longer a dead end on mobile — they carry Snooze and Done, and a tap lands on the block.**
+  A reminder fired, and then what? The banner said what was due and offered nothing to do about it. You opened the app, found the page, found the block. On a phone, at the moment the thing you were reminded about is happening, that is enough friction to make the reminder worth less than the interruption cost.
+
+  The banner now carries **Snooze 1h** (`Op::SnoozeRemind`, so it silences every device, not just the one you tapped) and **Done** (resolves the block's own page first, since the banner can arrive while you are looking at anything else). A plain tap opens the page and scrolls the block into view. Scroll rather than zoom on purpose: zoom makes a block the outline root, which is a deliberate gesture, and doing it to someone who tapped a notification hides the rest of their page and leaves them pressing Back.
+
+  **The ids have one owner.** `reminder_action_catalog` hands the frontend the same constants `deliver_due_reminders` stamps onto every banner, each with a declared `kind` (`snooze` / `done`) so the handler dispatches on meaning rather than pattern-matching how the id is spelled. Registration happens at boot, not on the first delivery: iOS resolves a banner's category at delivery time, and one naming a category nobody registered still shows — with no buttons and no error. Registering lazily would mean the first reminder of every session is the one that silently loses them.
+
+  **Mobile only, and that is a platform fact rather than an unbuilt feature.** `ActionType`, `register_action_types` and the `actionPerformed` event are `#[cfg(mobile)]` in `tauri-plugin-notification`, and its desktop `show()` spawns `notify-rust` and drops the handle — there is nothing to attach a button to and nothing to hear back from. The TUI's OSC 9 escape is one string to the terminal, with the same result. Rather than leave that difference for a user to find by pressing something, it is declared for all three clients as `Capability::ReminderNotificationActions` and published in [`docs/client-parity.md`](docs/client-parity.md); on the TUI and desktop the reminders list (`Ctrl+R`, `Cmd/Ctrl+Shift+R`) is what the nudge points at.
+
+  One more thing worth knowing, because it is the reason the ids live in Rust and the registration lives in TS: the plugin's `ActionType` / `Action` are structs with private fields, no constructor and no `Deserialize`, so `Notification::register_action_types` cannot be called from a consumer crate at all. `registerActionTypes()` in JS reaches the same command through IPC, and is the only door.
+  ([#63](https://github.com/outlmd/outl/issues/63))
+
+- **`outl peer qr` — turn a pairing ticket into a scannable QR, and stop printing broken ones.**
+  The mobile app pairs by camera, so for a phone the QR is not a convenience, it is the only route in. It has been printed by `outl peer pair` all along — and silently ruined by any terminal narrower than it. A ticket carries one entry per network address the host found, so it runs 400 to 750 characters and its QR runs 77 to 101 columns; anything past two direct addresses stops fitting an 80-column SSH window, which wrapped every row of it. A wrapped QR is not a degraded QR: no camera will ever decode it, and nothing on screen said why.
+
+  `pair` now measures the terminal before printing, and when the QR will not fit it prints one line naming the width it needed instead of burying the ticket under fifty lines of noise. `outl peer qr [<ticket>|-]` is the way back: it renders any ticket you already have and prints nothing else, so you can copy the ticket out of the narrow window and render it in a wide one. That command always prints — the warning goes to stderr — because a command asked for a QR and nothing else has no useful way to refuse.
+
+  Error correction dropped from `M` to `L`, which is ~8 columns narrower for the same ticket. `M`'s extra redundancy is aimed at print — a creased page, a smudged label — and this code is on a screen being photographed from thirty centimetres away.
+
+  `outl peer pair --ticket -` reads the ticket from stdin, which is what makes `pbpaste | docker compose run -i --rm outl peer pair --ticket -` work.
+
+- **A Docker image that runs `outl serve`, so a machine you own can be the always-on peer.**
+  P2P sync converges when two devices can reach each other, and a laptop shut at 18:00 never overlaps a phone edited at 22:00. The fix is a third device that is always awake — and until now you had to assemble it yourself, from a binary, a `systemd` unit, and two directories whose importance is not obvious until one of them is gone.
+
+  `Dockerfile` + `docker-compose.yml` + [`docs/self-hosting.md`](docs/self-hosting.md). **Entirely optional** — pairing a laptop and a phone directly is still the normal setup and needs none of this; the doc opens by saying so, because "self-hosting" usually implies there is a hosted thing you are opting out of and here there isn't one. It is also not a server your notes sync *through*: no account, no upload, no service that holds your graph. It is one more peer, doing what your laptop does, that never sleeps. You get convergence without overlap, and a real replica — the op log itself, every op, replayable.
+
+  The quick start is eight steps and needs **no clone and no toolchain**: make a folder, paste a compose file that pulls the published image, pair, start. Building from the repo is still there, folded into a `<details>` — and it is the route on `arm64`, because the published image is `linux/amd64` only and Docker reports that as `no matching manifest for linux/arm64/v8`, which tells a Raspberry Pi owner nothing about what to do next. The doc now says it up front, in the prerequisites, alongside the two ways through.
+
+  Two things the doc leads with because getting either wrong is expensive. **The server joins your graph; it never hosts the pairing** — the joiner adopts the host's workspace id, so pairing the wrong way round makes your *laptop* adopt the empty box's identity and stop converging with its own notes. And **`/home/outl` is a volume, not a detail**: it holds `identity.key`, which *is* the node id every peer has stored. Lose it and the container comes back a stranger that every device lists as offline.
+
+  No `HEALTHCHECK`, on purpose, and the reasoning is in the file: `outl workspace info` would lose the per-actor write lock to the running daemon and mint a fresh ephemeral `ops-<ulid>.jsonl` every thirty seconds, and `outl peer status` would fight it for the endpoint lease. The probe would have been the outage.
+
+- **`outl init --bare` — create a workspace with no ops in it.**
+  `init` normally seeds a `templates/journal` page and today's journal. On a workspace that exists only to *become* a replica, that seeding is actively wrong: pairing adopts the host's workspace id but keeps the joiner's ops, so the replica pushes a second `templates/journal` into your graph — two page nodes with one slug, both projecting to `pages/templates/journal.md`.
+
+  `--bare` writes the layout and the config and nothing else. The server image runs it. Don't use it for a workspace you'll write in directly; the journal template won't be there.
+
+- **Every client now tells you when a key does nothing, instead of leaving you guessing.**
+  Press a shortcut the client you are using does not implement, and it used to do nothing at all — the desktop logged a line to a browser console you never open. A missing feature and a broken one looked identical from the keyboard.
+
+  `outl_shortcuts::support` is now the single owner of which client performs which action, and it carries the sentence you see when one cannot. It is an exhaustive `match`, so a new action does not compile until all three clients have declared what they do with it — the gap gets recorded by whoever creates it, rather than found later by you pressing a key.
+
+  The full table is generated from that code and lives in [`docs/client-parity.md`](docs/client-parity.md). Writing it down turned up three things `docs/shortcuts.md` had been claiming that were not true: the desktop bound `y r` and `:` (neither had a handler — dead keys), and mobile undo / redo were listed as "toolbar" when mobile has neither. All three rows are corrected.
+
+- **`outl peer revoke-all` — lock out a lost or stolen device.**
+  `outl peer remove` only takes effect on the machine you run it on, which is fine for retiring a laptop you still have and useless for one that is gone. This rotates the workspace's identity: every pairing is dropped, and you re-pair the devices you still have. The device you do not re-pair keeps the old id, so it no longer shares a gossip topic with your devices and any direct connection is refused.
+
+  It asks you to type `revoke` first (`--yes` to script it), and tells you two things people would otherwise learn the hard way: a running GUI or `outl serve` is still holding the old identity until you restart it, and **the revoked device keeps the notes it already synced** — rotation stops new edits reaching it, it cannot take back history.
+
+  Rotation rather than a propagated "revoke everywhere": broadcasting a removal would let any paired device evict any other, and in the stolen-laptop case the attacker holds a paired device and would get to move first. ([#158](https://github.com/outlmd/outl/issues/158))
+
+- **`outl serve` is a real background daemon — it holds the P2P endpoint now, not just the file watcher.**
+  Continuous sync was never the missing piece: once any process holds this device's iroh endpoint, the catch-up loop and gossip converge with every paired peer on their own. What was missing is a *headless* process willing to hold it. `outl serve` was already the long-lived background process and never called `build_default_transport`, so a machine running it under `launchd` synced with nobody and said nothing about it — the same shape as [#220](https://github.com/outlmd/outl/issues/220), in a different command.
+
+  Both halves are on by default and each has an off switch: `--no-watch` (endpoint only) and `--no-sync` (watcher only). `--once` is unchanged.
+
+  **The sync half defers rather than competes.** One endpoint per device identity, elected not assigned — so it asks for the lease every 30s and treats a refusal as a normal state. A GUI or TUI that already holds the endpoint keeps it, and the daemon takes over when that exits. It does not yield once it holds, so a GUI opened later stays degraded until the daemon stops. Anything else would push every GUI on the machine permanently into the degraded mode where the sync dot never turns green. It stands down entirely with no paired devices, so it never holds the endpoint away from the pairing flow that fixes that, and it rebuilds the transport when `.outl/peers.json` changes — a device paired *after* the daemon started would otherwise never be synced with, while the daemon reported itself healthy.
+
+  **Which flag to leave running matters.** The watcher emits ops, so it takes the per-actor write lock, and whoever loses that race gets a fresh ephemeral actor and its own `ops-<ulid>.jsonl`. A daemon holding the device actor forever therefore mints one more op-log file on every later GUI launch. The sync half carries no such cost, so `--no-watch` is the mode to run permanently beside a GUI you also use.
+
+  SIGTERM and SIGINT both release the endpoint lease on the way out. A lease left held by a killed process locks every outl process on the device out of an endpoint. `--no-watch` exits non-zero when `[sync] transport` is `"file"`, since holding the endpoint was its only job; plain `outl serve` warns and keeps watching.
+  ([#244](https://github.com/outlmd/outl/issues/244))
+
+- **Page history — the op log holds every revision and now something can read it.**
+  `Op::Edit` carries a Yrs delta, not a snapshot, and the log is append-only, so every past state of every block has always been reconstructible. Nothing surfaced any of it. The only history a user had was `outl backup`, which is workspace-granular git snapshots and is not wired on desktop or mobile at all — on the workspace this was built against, that meant one commit, twelve days old, on a graph edited daily.
+
+  `outl page history <slug>` and `outl block history <id>` (both `--limit`, both `--json`), plus a `⏱` button in the desktop page header. Read-only everywhere: restoring a revision stays `outl recover`'s job, which covers one narrow case with a provably-additive rule, and a general restore needs its own safety argument.
+
+  Two decisions worth knowing. **A deleted block stays in its page's history**, with the text it held when it went — a history that omits deletions omits the change people open a history to find. And **not every op is an event**: folds, snoozes, `page-slug` writes, an edit that re-emitted the block's existing text, and a re-emitted `Create` / `Move` that changed nothing are skipped, because a reconcile produces all of those in volume and they bury the real changes.
+  ([#241](https://github.com/outlmd/outl/issues/241))
+
+- **Properties are creatable and deletable from every client.**
+  Editing a property that already existed worked. Making the first one did not: both GUI clients could only edit a chip that was already there, so creating meant opening the `.md` by hand or reaching for the TUI, and deleting was an undiscoverable gesture (empty the value).
+  Page properties were worse — `PageView` carried none, so `icon::` and `type::` could not even be read outside the TUI.
+
+  Each client got the shape that fits it.
+  The TUI opens a `g p` overlay (`j`/`k` moves, `Enter` edits, `dd` deletes, `o` adds, `p` flips to page scope), with `Tab` completing the key from the workspace catalogue and `[[` opening the page picker in the value.
+  The desktop grew a `+` and an `×` on the chip row, plus the same `[[` picker.
+  Mobile got a bottom sheet, reachable from the block long-press **and from a press-and-hold on the page title**, where the key shows as tappable chips of the most-used keys instead of an empty field.
+  An empty page on mobile used to render nothing at all and now offers both doors.
+
+  Typing `key:: value` on a child line still works and always did.
+  The UI is the door for people who don't know the syntax, not a replacement for it.
+  ([#13](https://github.com/outlmd/outl/issues/13))
+
+### Fixed
+
+- **A flaky NDK download took the Homebrew tap down with it, four releases deep, and only one of the four went red.**
+  v0.12.0-beta.207's `build_android` job died in `Install Android NDK`, at 33% of a ~700 MB download the runner image does not ship.
+  The line was `An error occurred while preparing SDK package NDK (Side by side) 27.1.12297006: Error reading Zip content from a SeekableByteChannel`.
+  `sdkmanager` logs that as a *Warning* and still exits 1, so it reads like a bad pin and is a truncated transfer.
+  The install retries three times now, deleting the half-unzipped package and sdkmanager's download scratch between attempts — a retry that reuses the corrupt zip fails identically.
+  It gates on the `clang` binary `cargo-ndk` will invoke rather than on the exit code, because a partial unzip leaves `source.properties` behind and claims to be installed.
+
+  The interesting part is everything that failure reached.
+
+  **"Re-run failed jobs" could never have worked.**
+  `build_android` is best-effort, so `publish_release` waits for it without requiring its success and flips the draft either way.
+  A published release is immutable, so the re-run two days later built a clean APK and got `HTTP 422: Cannot upload assets to an immutable release` — which reads like a token scope problem and means "too late".
+  The upload step probes `isDraft` first now, the same probe `create_release` already makes, and says the recovery is a new beta.
+  The workflow header had claimed we "only publish after every artifact landed"; it now says what `publish_release` actually waits for, which is every artifact *job*.
+
+  **And `update_tap` was never reached.**
+  A job's implicit `success()` reads the whole ancestor tree, not its direct `needs`, so a failed `build_android` skipped the tap bump through a `publish_release` that had succeeded.
+  beta.207, beta.196 and beta.194 all published with `Formula/outl-beta.rb` and `Casks/outl-desktop-beta.rb` left on the previous version, so `brew upgrade outl-beta` served the old binary and no job went red to say so.
+  `update_tap` carries `!cancelled()` now, the guard `publish_release` already had for the same reason and one level up.
+
+  beta.202 is the fourth, and it failed rather than skipped: a bare `HTTP 500` on one asset in `gh release download`.
+  That one retries too.
+
+- **A page whose only block is empty stopped syncing the moment a peer wrote into it ([#332](https://github.com/outlmd/outl/issues/332)).**
+  Reported from iOS against a Linux `outl serve`: journal days written on a laptop showed as a single empty bullet on the phone while other days synced fine, and typing into that bullet made the whole day appear at once.
+  The op log and the tree were both correct; only the `.md` the view reads was stale, which is issue [#166](https://github.com/outlmd/outl/issues/166) mirrored, surviving the fix for it.
+
+  `apply_page_md_with_sidecar_if_stale` gated the re-projection on `sidecar_can_answer`, which asks whether a sidecar's blocks can say what the op log held.
+  A sidecar written before 0.11 carries `text: ""` on every block and cannot, and the gate exists so its empty verdict is never read as "nothing at risk" (invariant 8).
+  But **a page nobody has written in yet has exactly that shape too.**
+  A fresh journal day, every page created for a `[[link]]` that was never filled, and both pages `outl init` leaves behind all carry one block with no text, so each was treated as a page nothing could vouch for and refused for good.
+
+  Nothing said so.
+  `Ok(None)` is what `reproject_stale_md` reads as success, so no banner reached the view.
+  `outl serve`'s sweep folded the page into the arm commented *"nothing here is a page that silently stopped converging"*.
+  And `outl doctor` called it a sidecar "written before 0.11", which was a claim about provenance it could not make.
+  The argument for staying quiet was that the orphan scan's reconcile rewrites such a sidecar *with* text, which arms the real check.
+  That holds for a pre-0.11 sidecar and not for an empty page, and being queued was never the difference: the page observed on a real workspace carried `pipeline_version` 4 against a current 5, so it *was* queued.
+  Its blocks are genuinely empty, so each reconcile rewrote the same `text: ""` and the next open refused it again.
+  The self-healing cannot reach this class at all, which is why the gate has to tell it apart up front.
+
+  **The question is about the bytes on disk, not the sidecar's shape**, and one of the three callers already paired it that way: `collect_ahead`, behind `outl reconcile --ahead-of-log`, asked "is anything actually on disk" inline.
+  Only the gate, though — its verdict then counted those same empty entries as lines ahead of the log, so that half moved with the rest (below).
+  That pairing is `outl_md::unlogged::sidecar_can_vouch_for` now, the single owner of "can this sidecar vouch for the `.md` on disk", asked by the write path, the survey's classifier and `outl reconcile`'s `collect_ahead` alike.
+  Three owners of one fact, where two were wrong and the difference was recorded nowhere.
+  Measured on a 2,874-page workspace: one page frozen in that state, and **zero** genuine pre-0.11 sidecars, so every refusal the narrow gate produced there was a page with nothing at risk.
+
+  **The same conflation sat one layer below the gate, in three counters, and the write path was the only one the gate alone fixed.**
+  A bare `-` normalises to the empty string, so it matches nothing in a reference whose blocks hold text and was counted as a line a re-projection would delete — a line holding no bytes.
+  In `lines_removed_by` that cost the most.
+  `lines_removed > 0` routes a page to the sweep's `withheld` arm *before* the write arm, so `outl serve` left the commonest #332 page at one bare bullet every 30 seconds, for good, while `outl doctor` reported a content loss that could not happen.
+  That page is a peer **typing into** a journal's seed bullet rather than appending beside it, which is what the reporter's laptop did, and it is pinned by `the_sweep_converges_a_page_whose_only_empty_block_a_peer_typed_into`.
+  `classify` had it too, and there it made the listing contradict the writing pass: `AheadOfLog { sample: "" }` sent the user to `outl reconcile --ahead-of-log` for a page `apply.rs` was about to write.
+  `collect_ahead` had it in its own count, putting a false row in that command's pick list.
+  The writer's own refusal, `unlogged_content_error`, had it as well: an answerable sidecar under a `.md` with one surplus bare bullet was refused with an empty sample, for a page the listing and `outl reconcile --ahead-of-log` both reported clean (`if_stale_reprojects_over_a_surplus_bare_bullet_on_an_answerable_sidecar`).
+  All four count only non-empty lines now; `the_sweep_still_counts_a_real_line_a_reprojection_would_remove` pins that a real removal is still withheld.
+
+  **This narrows which pages are refused, never which content is protected.**
+  A pre-0.11 sidecar over a `.md` holding real text still declines and the bytes still survive, phrased by the same `unlogged_content_error`.
+  Two proptests over the existing generator carry that mechanically, and each catches the mutation the other misses.
+  Reverting the gate to `sidecar_can_answer` fails `a_rendered_page_is_always_vouched_for_by_its_own_log`, shrunk to a page whose only block is empty.
+  Stubbing the second arm to `true` fails `vouching_on_a_text_less_reference_implies_nothing_to_lose`.
+  The frontmatter channel was checked separately and survives both ways: a fence the log does not know is still refused with `PageMarkdownAheadOfLog`, and one it does know is re-emitted from the log.
+  Both directions are pinned: `unlogged_vouching.rs` for the predicate, and as pairs in `if_stale.rs` and `survey/tests.rs` for the two decision points.
+  Fixing the write path alone would leave the sweep and the doctor blind to the same pages.
+
+  Root cause, the repro and the fix shape are [@davclark](https://github.com/davclark)'s.
+
+- **Desktop showed a `🖼️ name` chip where an inline image should have been ([#322](https://github.com/outlmd/outl/issues/322)).**
+  `MarkdownInline`'s `variant` flag was answering two questions with one value.
+  `variant="inline"` is what gives the desktop its TUI-style underlined refs and tags instead of mobile's pill chips, and the `image` arm read that same flag to decide whether an asset may take a block of its own.
+  The main outline row wants the first and not the second, so every image on desktop collapsed to a chip.
+  Mobile passes no `variant` at all, which is the only reason it rendered the picture, and `docs/markdown-format.md` has said "Desktop and mobile show an `<img>`" the whole time.
+
+  A `blockAssets` prop carries the second question on its own now.
+  It defaults to what the variant used to imply, so the contexts that genuinely cannot hold a block image (backlinks, embedded subtrees, breadcrumbs) keep their chip without passing anything.
+  Reported by [@jes-carr](https://github.com/jes-carr), fixed by [@DYNOSuprovo](https://github.com/DYNOSuprovo).
+
+- **The Insert-mode caret pushed every character to its right one column over in the TUI ([#320](https://github.com/outlmd/outl/issues/320)).**
+  `emit_row_with_cursor` drew the caret as a literal `▏` span spliced *between* two characters of the block's text.
+  A terminal is a cell grid and a glyph costs a cell, so the tail of the line sat one column right of where it really was, and walked back and forth by one as the cursor moved through the text.
+  The row was also one cell wider than the text, so a block near the pane edge wrapped a character earlier while it was being edited than it did the moment Esc was pressed.
+
+  The caret marks the character it sits before now — `cursor_caret_fg` plus an underline, on the cell that is already there.
+  Nothing is inserted, so nothing moves.
+  The underline is doing real work rather than decorating: `cursor_caret_fg` is a foreground colour, and a foreground colour paints nothing on a space, which is exactly where a caret in prose spends much of its time.
+
+  Past the end of the line there is no character to mark, so the `▏` stays there.
+  It has nothing to its right to shift, which is also why the overlay inputs (command palette, search, `key:: value` rows) keep theirs: `PropertyEdit` has no cursor column at all, so those carets are always past the last character.
+
+  The Normal-mode block cursor never had the bug — it inverts the character under it rather than adding one — which is why the report is specific to Insert.
+
+  **Making the caret a text cell handed it a second set of rules, and the first version of this fix broke against them.**
+  `view::wrap` treats a space as a separator it may discard: absorbed at a wrap boundary so the next row doesn't lead with a blank, and trimmed off the end of a row that just pushed a word down.
+  That was sound while the caret was its own glyph.
+  The moment the caret *became* the cell, a caret parked on a space near a wrap boundary was thrown away and the user saw no cursor at all — columns 9 and 19 of a 43-cell block in a 16-cell pane, found by walking every column rather than picking one.
+  `push_wrapped` now takes the style the cursor cell was painted with, so it can tell a load-bearing space from a separator.
+  A blanket "a styled space is never a separator" rule was the wrong shape: it would also catch the spaces inside `**bold**`, `` `code` `` and `[[a page ref]]`, which really are separators.
+  The same protection fixes the Normal-mode block cursor, which had the bug quietly before this change since it too paints a space in place.
+
+  Two things deliberately not fixed, named so they are recorded rather than discovered:
+
+  The caret styles a single `char`, not a grapheme cluster.
+  Parked on a zero-width continuation code point — a combining accent, a ZWJ inside an emoji sequence — it paints a zero-width cell and disappears.
+  Arrow keys step per `char`, so the position is reachable.
+  The old `▏` was visible there, at the price of splitting the cluster it was drawn inside.
+  Closing this properly needs grapheme segmentation, which is not a dependency of this workspace.
+
+  And the caret is still painted by outl into the cell grid rather than handed to the terminal via its real cursor.
+  A native cursor would blink and take the shape the user configured.
+  Getting there means locating the caret's screen coordinates *after* wrapping and scrolling, and arbitrating the one terminal cursor between the outline and every overlay that draws its own.
+
+- **Block properties sat two columns to the left of the block they belong to in the TUI ([#319](https://github.com/outlmd/outl/issues/319)).**
+  A bullet row spends four cells between the indent guides and the text: two for the fold slot (`▼ ` / `▶ ` / blank) and two for the `- ` bullet. Continuation rows mirrored that; property rows padded two, so a `priority:: high` landed under the fold marker instead of under the block's own text.
+
+  There were three copies of that measurement and they had drifted in three directions, so the fix is one module rather than one patched line. `view::row_chrome` owns the fold slot, the `auto-run::` marker, the pad, and the whole `key:: value` row; the outline and the backlinks mini-outline both call into it.
+
+  **Two more bugs fell out of writing the test for the first one.** `⚡` measures two cells and the pad reserved one, so every continuation row of an `auto-run::` block was a column short — the glyph is a named constant now and a test pins the pad to its measured width. And the backlinks copy never drew the `property_glyph` at all, so the same `remind::` showed a `⏰` in the outline and nothing in the backlinks pane, with no test that could notice.
+
+  **A property row wraps now.** It was pushed as a bare `Line`, and the outline's `Paragraph` has no `.wrap()` (deliberately — wrapping after layout desyncs the scroll index), so a long `template::` was clipped at the right edge with nothing to indicate it. It goes through the same `push_wrapped` every block row uses, with the glyph in the `head` so a wrapped value re-indents under the key.
+
+  Still open, and deliberately: the glyph sits inline before the key, so a block carrying both `remind::` and `priority::` has its two keys in different columns. Moving the glyph into the fold slot would need one width for `▶ ` (two cells) and another for `⏰ ` (three), and reserving the slot for everyone would cost three dead cells on every property row of every block.
+
+- **A `lua` code block could run arbitrary shell, and no interpreter honoured its timeout ([#278](https://github.com/outlmd/outl/issues/278), [#279](https://github.com/outlmd/outl/issues/279)).**
+  `runtimes/lua.rs` built its interpreter with `Lua::new()`, which loads mlua's `StdLib::ALL_SAFE` — and "safe" there means *memory-safe*, not sandboxed. It excludes `debug` and `ffi` and **includes** `os` (which carries `execute`), `io` and `package`. So a fenced ` ```lua ` block had a shell, arbitrary file read and write, and `getenv`, in 7ms:
+
+  ```
+  $ outl template run pwn --page host --block 01M2… --json
+  {"result":{"duration_ms":7,"exit":"Ok","stdout":"os:\ttable\tio:\ttable\nHOME:\t/Users/avelino\n"}}
+  $ ls /tmp/outl-exec-*.txt
+  /tmp/outl-exec-escape.txt   # io.open + write
+  /tmp/outl-exec-shell.txt    # os.execute
+  ```
+
+  **The reason this is a defect and not a feature is that a fence body is not always written by the person running it.** It arrives over iroh from a paired device, through `outl import` from someone else's graph, or under an LLM agent driving `outl_template_run` over MCP. Pairing a device is a decision about *sync*; it was silently also a decision about code execution on the host.
+
+  The fix is an allowlist, because a denylist fails open — the next mlua release that adds a library would grant it without anyone deciding to. `runtimes::lua::stdlib` names the permitted set (string, table, math, utf8, coroutine) and `LOADERS` strips `load` / `loadstring` / `loadfile` / `dofile` / `require` separately, since Lua's base library is not covered by any `StdLib` flag and a loader re-opens what the allowlist closed.
+
+  **The second half is that nothing stopped a block that never finished.** `runtime.rs` said implementations "**must** honour `ctx.timeout`"; `sandbox::with_timeout` had **zero callers in production**, and three of four runtimes took `_ctx` — discarding the argument. Measured: `while true do end` was still running after 20 seconds. Because execution is in-process and synchronous, that is not a stuck block — it is the TUI event loop frozen, the desktop wedged while holding the workspace mutex, and `outl mcp serve` hung with its agent waiting on it.
+
+  There are now two grades of stopping, and the difference is recorded rather than averaged over. `lua` gets a real abort through mlua's instruction hook: the VM unwinds itself, nothing leaks. `python`, `lisp` and `js` go through `sandbox::with_timeout`, which releases the caller but leaves the worker running until the process exits. That leak is a deliberate trade — the alternative is not "no leak", it is a frozen client — and each is the way it is for a reason worth re-checking on a dependency bump:
+
+  - **boa 0.22** — `RuntimeLimits` caps loop iterations, recursion and stack; nothing per-instruction or wall-clock, and `HostHooks` has no interrupt.
+  - **rustpython 0.5** — `eval_breaker_tripped` is `pub(crate)`, and the opcode trace hook only fires when a frame's `f_trace_opcodes` is set from Python.
+  - **steel 0.8.2** — `Engine::with_interrupted` takes an `Arc<AtomicBool>` and **the VM never reads it**. Every occurrence in the crate is a write. An API shaped like a cancellation point that is not one, and the reason the first attempt at this fix appeared to work and did not.
+
+  **Reviewing that fix found the same hole in `lisp`, which this change also closes.** `Engine::new()` registers `steel/filesystem`, `steel/process`, `steel/tcp` and `steel/http`, so a ```` ```lisp ```` fence had `command` (a shell), `open-output-file` and `tcp-connect` — never mentioned in issue 278 because nobody had looked. It now builds sandboxed and shadows the names that survive that (`HOST_BINDINGS`); the second half is a denylist, which fails open, and is held shut by a test rather than by design.
+
+  Two more escapes in the `lua` deadline, both found in review and both fixed:
+
+  - **A coroutine the script created ran with no deadline at all.** `Lua::set_hook` installs per Lua thread, and mlua resolves the per-thread callback through a registry table — a coroutine from `coroutine.create` is absent from it, and mlua's response is to *disable the hook*. `set_global_hook` is inherited by every thread.
+  - **`pcall` swallowed the deadline and the block reported success.** The hook raises an ordinary Lua error and `pcall` catches ordinary Lua errors, so `pcall(function() while true do end end) print('escaped')` returned `ExitStatus::Ok` with `escaped` written to the page. The expiry flag is now checked on the success path too, not only on the error path.
+
+  `docs/privacy.md` said the execution was bounded and sandboxed while neither was true; it now describes what the code does, including that a block may have arrived from a paired device and that finishing an edit on a `call:` block runs the template's code.
+
+  **This removes `os` and `io` from `lua` blocks entirely, and that is a breaking change for a note that used the harmless half.** `os.date('%Y')`, `os.time()` and `os.clock()` are gone along with `os.execute` and `os.getenv`, because they ship in the same `StdLib::OS` flag. Re-exposing the clock functions as a hand-built `os` table would keep the allowlist honest and is worth doing — but it is a feature, not part of closing the hole, so it stays out of this change. A `lua` block that formatted a date now traps with `attempt to index a nil value (global 'os')`.
+
+  `tests/sandbox.rs` pins both questions for every runtime in one place, so adding a language cannot answer them differently by omission. Its deadline assertions run the block on a worker thread and fail on a timeout rather than blocking — a red test for "it never returns" has to fail, not wedge CI.
+
+- **`outl peer remove` did not remove the device. Membership gossip put it back within about five seconds.**
+  The receiver-side check landed earlier and was correct — an inbound sync connection from a device absent from `peers.json` is refused. What it could not survive was this project's own membership gossip, which broadcasts each device's peer list every 5s and merges anything it does not already know. Every *other* paired device still listed the removed one, so the entry came back and the check then passed honestly. A guard and its undo, shipped in the same binary.
+
+  This is worse than never having built the guard, because a user could watch a denial and reasonably conclude they were protected.
+
+  `PeersStore::remove` now records a tombstone that membership gossip honours. Re-pairing the device clears it, so removal is not a one-way door; the tombstone never expires, because a revocation that reverses itself on a timer is the same bug wearing a clock.
+
+  **Read the scope, it is not what the command name implies.** This revokes the device on the machine you ran the command on. Your other paired devices keep their own lists and keep syncing with it, so cutting off a lost laptop means running it everywhere — which `outl peer remove` and the GUI device list now say, instead of printing `Removed peer <id>` and letting you infer otherwise. And a revoked device keeps the copy of the graph it already had; revocation stops new edits, it does not take back history. Cutting a device off everywhere without touching each machine is `outl peer revoke-all` (above). Propagating a *removal* between devices stays out of scope, and [RFC 0155](docs/rfcs/0155-peer-trust.md) says why it loses to rotation for the case that matters ([#158](https://github.com/outlmd/outl/issues/158)).
+
+- **Anyone who knew your device's address could take the pairing slot.**
+  While the host was armed (~2 minutes), the first device to connect on the pairing channel was accepted and handed the workspace identity. No PIN, no challenge, no check that it was the device the code was meant for — and "knew the address" is a low bar, since membership gossip hands every mesh member every peer's address.
+
+  Pairing codes now carry a one-time secret, and the joining device proves it holds the code before the host discloses anything. The proof is keyed to the joiner's own device id rather than being a bare hash, so a proof captured off the wire cannot be replayed by a second device.
+
+  **A refused attempt no longer burns the pairing window.** The CLI accepted exactly one connection and the GUI disarmed on any inbound dial — so adding a check to fail would have turned a single packet into a way to stop you pairing at all. Both now stay armed until a joiner actually passes.
+
+  Codes made by an older version are refused with a message telling you to update the other device and generate a new one, rather than silently pairing without the check. Treat a pairing code like a password for its two-minute life: anyone who photographs it can still use it ([#159](https://github.com/outlmd/outl/issues/159)).
+
+- **`outl peer pair` could hang forever with no output on the joining side.**
+  Connecting to the pairing host was the one step of the handshake with no timeout — the accept window and every payload read had one, the dial did not. When the connection failed to establish, the command just sat there, leaving the user nothing to act on and nothing to report.
+
+  It is now three bounded attempts and then an error naming what to check. Found while writing the test for the change above: the old code accepted exactly one connection, so nothing ever dialled a host that had already handled one, and the stall had nowhere to show up.
+
+- **The op log on disk disagreed with the op log in memory about every `Move` and every `SetProp`.**
+  `Tree::do_op` fills the `old_parent` / `old_position` / `old_value` fields that let an op be undone, but `Workspace::apply` handed it a *clone* and then persisted the caller's original. Those fields are only as good as the code that built the op: `block::moves::move_to` reads them off the tree and is right, while the reconcile and import paths pass `root` / `None`. On one real 64k-block workspace that meant 65,141 of 65,703 stored `Move` ops named the wrong old parent, and all 14,191 `SetProp` ops carried a null old value.
+
+  Sync and convergence were never affected, which is why it went unnoticed for so long — every ingest path runs `do_op`, which overwrites the fields before the one function that reads them can. What was affected is anything reading the log as data.
+
+  `apply` now stores what the tree recorded. The values already on disk stay wrong, because the log is append-only, so readers must keep deriving from the fields describing an op's own effect.
+
+### Fixed
+
+- **`since: 3м` in a ` ```query ` fence panicked instead of reporting an unknown unit.**
+  The parser split the value on its last *byte* (`v.len() - 1`), which is not a character boundary when the unit is multi-byte. `query` carries `auto_run() == true`, so the panic fired on every load of the page holding the fence, inside the TUI event loop or `outl mcp serve` — not on a path anything could catch. It now splits on the last character and reports `since: unknown unit 'м'`.
+
+### Changed
+
+- **`tag:` in the ` ```query ` DSL now stops at the tag boundary.**
+  It matched by substring on the block's folded text, so `tag: ops` also hit `#opsec` and `#ops-team`. That was over-inclusive and harmless on its own — an extra row in a result list — but `not-tag:` is the same predicate with a `!` in front, and over-inclusive negated is **silent over-exclusion**: `not-tag: work` would have deleted every `#workflow` block from the answer with nothing on screen to notice. Fixing one side and not the other was not an option; fixing the negative alone would have broken the complement law.
+
+  The new behaviour is what `docs/query.md` always documented: `#ops/deploy` matches `tag: ops`, `#opsec` does not. It is case-insensitive like the rest of the DSL. `outl_md::tag::text_contains_tag_or_child` is the single owner — a sibling of `text_contains_tag`, which stays exact and case-sensitive for backlinks and tag counting. The cached `text_fold` is still the first gate (a boundary match is a subset of a substring match), so a filter that auto-runs on every page load almost never reaches the tokenizer.
+
+  **A query relying on the old substring behaviour narrows.** `tag: op` no longer answers for `#ops`; spell the tag, or its parent namespace, in full.
+
+- `outl query --prop` accepts a bare `key` (matching any value) alongside `key=value`, so `--not-prop key` has a positive counterpart. `key=` with an empty value is now rejected with `INVALID_ARG` instead of comparing against the empty string.
+
+- `outl query --tag` / `outl page list --filter tag:` accept a leading `#`. `--tag '#work'` used to match nothing, silently.
+
+- **MCP tool replies are projected for an LLM, cutting a call's payload by roughly half to four fifths.**
+  Every successful `tools/call` used to send its payload **twice**: once as a `{ ok, data, error }` envelope in `structuredContent`, and again in `content[0].text`. For 37 of the 41 tools that second copy was pretty-printed JSON. The four markdown-shaped ones (`outl_page_render`, `outl_export_md`, `outl_daily_today`, `outl_daily_get`) already flattened their text to the `md` field, so they paid for the envelope rather than for a second JSON blob. On top of all of it, every outline node carried `tokens`, a pre-tokenized inline AST that exists so the Tauri renderers do not need their own inline tokenizer, and which restates `text` an LLM already has.
+
+  A success reply is now content-only and compact, with `tokens` and default-valued `collapsed` / `todo` / empty `properties` dropped. Measured against a 2,862-page workspace: `outl_daily_today` fell from ~12.2k to ~5.9k characters, `outl_page_get` on a journal from ~22k to ~5.9k, `outl_page_list` from ~726k to ~303k. `outl_page_render` and `outl_export_md` still send raw `.md`, unchanged, because their payload is `{slug, md}` and the caller supplied the slug.
+
+  **One tool's text content changed kind, not just size.** `outl_daily_today` and `outl_daily_get` used to put raw markdown in `content[0].text` and now put JSON there, because the `outline` beside that markdown is the only place a block id appears and it used to reach callers through `structuredContent`, which is gone. If you were reading their text as markdown, read `.md` out of the JSON instead.
+
+  **This is a wire-format change for any MCP client that read `structuredContent` on success** — `docs/cli.md` used to tell clients to do exactly that. Errors are unchanged and deliberately still carry `structuredContent: { ok: false, error }`, since their text is only a `code: message` summary and it is the sole machine-readable copy of `error.data` (RFC 0255). No tool declares an `outputSchema`, so omitting `structuredContent` on success stays within the MCP spec. The CLI's own `--json` output is untouched, as are the shared `cmd/*` handlers.
+
+  **Two things are deliberately *not* trimmed, and both are load-bearing.** The journal reads (`outl_daily_today`, `outl_daily_get`) are not flattened to their `.md` despite being markdown-shaped: `outline` is the only place a block's id appears — ids live in the sidecar, never in rendered markdown — and `outl_block_update` / `_move` / `_delete` / `_toggle_todo` all require one, so flattening them would break "read today's journal, tick a task" in a way nothing would report. And pruning keys on an outline node's `id` as well as its `text` + `children`: `outl_md::ast::OutlineNode` has the same `text` + `children` shape with no `id`, `outl_export_json` returns those nodes, and its `properties` has no `#[serde(default)]` — so a looser guard stopped the export deserializing back into the type that produced it, silently, on every block without a property.
+
+  Reasoning, rejected alternatives and the `outputSchema` decision: [RFC 0276](docs/rfcs/0276-mcp-content-only-replies.md).
+  Thanks to [@waldnzwrld](https://github.com/waldnzwrld) ([#273](https://github.com/outlmd/outl/pull/273)).
+
+- **`g p` in the TUI now opens the property editor.**
+  The `pinned::` toggle moved to **`g P`**; `/pin` is unchanged.
+  Pinning is a once-per-page act with a second door already, editing properties is a daily one, and `pinned::` is itself one of the page properties `g p` now edits.
+
+- **A third task state: `DOING`.**
+  A block used to be either `TODO` or `DONE`, with no way to say a task is underway.
+  The workaround was a tag or a property, which kept that state out of `status:` queries and out of the progress counter, and let every user invent a different convention for it.
+
+  ```markdown
+  - TODO write the RFC
+  - DOING ship the parser
+  - DONE read the paper
+  ```
+
+  The toggle (`Ctrl+T` in the TUI, `⌘T` on desktop, tapping the checkbox on mobile) walks one more stop: `(none) → TODO → DOING → DONE → (none)`.
+  `status: doing` is a query filter like any other, and `- [/]` (Logseq / Obsidian) plus Roam's `{{[[DOING]]}}` normalize to it on paste.
+
+  **Importing Logseq no longer flattens it.**
+  `DOING` used to arrive as `TODO ` plus a `state:: doing` property (and `NOW` as `TODO ` plus `state:: now`), which no query, count or view could tell apart from a real `TODO` — every Logseq graph imported before this landed is flattened that way, and re-importing is what fixes it.
+  `NOW` still keeps a `state:: now` property, since outl has one started-state and Logseq has two.
+
+  Two things deliberately did **not** change: `status: open` still means "is a task" (DONE included), so existing queries keep their meaning, and the progress chip counts `DOING` toward the total but never toward the done half — a started task is unfinished work.
+
+  Nothing in the parser, the renderer, the sidecar or any DTO changed: the state is a text prefix like `TODO `/`DONE `/`> ` before it, so a `.md` written by a newer binary still reads on an older one (the marker simply shows as literal text).
+  The one shape to know when writing code against it: **`DOING ` is one character wider than the other two markers**, so cursor math measures `TodoState::prefix` instead of assuming five.
+  ([#235](https://github.com/outlmd/outl/issues/235), [RFC 0008](docs/rfcs/0008-markdown-dialect-and-sidecar-tokens.md))
+
+- **Markdown checkboxes are tasks now.**
+  Typing `- [ ] buy milk` used to leave inert prose: the literal `[ ]` rendered as text, the block matched no `status:` query, counted in no progress chip, and `Ctrl+T` treated it as unmarked.
+  It is now read as a task in all three states, alongside the word form:
+
+  | You type | outl reads it as |
+  |---|---|
+  | `- [ ] buy milk` | `TODO` |
+  | `- [/] buy milk` | `DOING` |
+  | `- [x] buy milk` / `- [X] buy milk` | `DONE` |
+
+  **Two spellings in, one out.**
+  outl still writes only the word form, so the first toggle rewrites `[ ] buy milk` into `DOING buy milk` and it does not go back to brackets.
+  Until you act on a block, its bytes are untouched — recognising a spelling never turns opening a page into a write, which is why the alternative (normalising at parse time) was rejected: it would edit the file on read and change text under the cursor.
+
+  The trailing space is what separates a checkbox from a link, so `[x](https://example.com)` stays a link, and `[]` / `[ ]` alone / `[y] foo` stay prose.
+  ([#230](https://github.com/outlmd/outl/issues/230))
+
+- **`outl doctor` now reports — and `--repair` drops — actor bindings for workspaces that no longer exist.**
+  `~/.config/outl/actors/` (or `$OUTL_DEVICE_DIR/actors/`) records which actor id this device writes under for every workspace it has ever opened, and nothing ever removed one.
+  A workspace you deleted last year still had its binding; on one development machine that reached 1,208 records, 1,166 of them pointing at directories that are gone.
+
+  The count is reported as **info**, not a warning: a stale binding is ~190 bytes and breaks nothing, because the workspace it names does not exist.
+
+  What matters is what `--repair` refuses.
+  Dropping a binding is not free — the next open of that workspace mints a **fresh** actor, a second `ops-<actor>.jsonl` for a device that already had one, which is exactly the fork the device store exists to prevent.
+  So "the folder is missing" is not enough on its own: an unplugged external drive, an unmounted network volume, an iCloud folder not yet downloaded on this machine, and a workspace you archived all look identical to a deleted one.
+  A binding goes only when its root is gone, its root's **parent directory is still present** (a deleted folder leaves its parent behind; a missing mount takes the whole path with it), and the record is over **30 days** old.
+  Anything the check could not *read*, rather than observed to be absent, is kept — including a record whose `root=` does not survive a parse/write round trip.
+
+  One thing the 30 days is **not**: a grace period after a deletion.
+  It is the age of the *record*, and a binding is only rewritten when its workspace moves, so a graph you have had for years and deleted this morning is eligible right away.
+  That is bounded rather than dangerous — a dropped binding costs one extra `ops-<actor>.jsonl` and loses no ops, since every reader merges every `ops-*.jsonl` in the directory — and the parent check is what actually protects a live workspace.
+  The verdict is re-checked immediately before the delete, so a drive plugged back in between the listing and the repair keeps its binding, and each dropped record is copied into that run's `.outl/repair-backup/` generation first.
+  `iroh/identity.key`, `machine-id` and `backups/` are never touched.
+
+  `--repair` also deletes **abandoned scratch files** in the same directory: every device-store write composes a `.<name>.<pid>.<seq>` sibling and removes it after publishing, so a process killed in between left one behind forever.
+  Anything untouched for 24 hours qualifies; a real write lives for microseconds.
+  These are never reported as bindings (a scratch file names no workspace) and never backed up (it never became a record).
+
+  This closes the last open item of [#211](https://github.com/outlmd/outl/issues/211) — root `CLAUDE.md` invariant 9's fourth question, *what cleans it up?*
+
+### Changed
+
+- **`docs/cli.md`'s `outl doctor` section moved to its own page: [`docs/doctor.md`](docs/doctor.md).**
+  `cli.md` is the surface contract for ~30 subcommands, and `doctor` was a sixth of the page on its own, because the part that matters about it is everything `--repair` *refuses* to touch.
+  Old `cli.md#outl-doctor` anchors no longer resolve.
+
+- **HTTPS now trusts the operating system's certificate store instead of a bundled root list.**
+  `reqwest` 0.13 renamed its TLS features and made `rustls` mean "rustls + `rustls-platform-verifier`", so the two crates that fetch over the network — remote asset download during a Roam import (`outl-import`) and plugin registry install (`outl-plugins`) — stopped carrying their own copy of the webpki root set.
+  The practical difference is that a certificate your machine already trusts (a corporate MITM proxy, an internal CA) now works without further configuration, and a root revoked at the OS level stops working without waiting for an outl release.
+  This is the same verifier iroh already used for QUIC, so the Android JNI bootstrap in `android_jni.rs` that primes `rustls-platform-verifier` now covers every TLS path in the app rather than just sync.
+  No OpenSSL anywhere, unchanged.
+
+- **The repository moved from `avelino/outl` to the `outlmd` org: <https://github.com/outlmd/outl>.**
+  GitHub redirects the old URL, old clone remotes and old issue links, so nothing breaks by itself.
+  Two things are re-resolved by name rather than followed, and both need a one-time action:
+
+  **Homebrew tap.** `brew untap avelino/outl && brew tap outlmd/outl https://github.com/outlmd/outl && brew trust outlmd/outl`.
+  Installed formulae keep working until the next `brew upgrade`; untapping uninstalls nothing.
+
+  **Plugin sources.** A plugin installed as `github:avelino/outl/examples/<name>` is pinned by that string in the lockfile.
+  Reinstall it as `github:outlmd/outl/examples/<name>` to keep updates flowing.
+
+### Added
+
+- **`outl recover` — brings back block text that an `Op::Edit` truncated, reading the op log rather than the `.md`.**
+  Everything else that recovers unlogged content (`outl reconcile --ahead-of-log`, the `doctor` listing) works by reading the `.md`, which only helps while the `.md` still holds it.
+  A page overwritten before the re-projection guard existed was assumed lost.
+  It is not: the log is append-only, so the truncating edit did not replace the earlier one, it followed it.
+
+  The signature is deliberately narrow — not "the text shrank" (deleting text is something users do) but "the current text is a **prefix**, character for character, of an earlier revision", which is what dropping everything after a point produces.
+  On a real 2,560-page workspace the whole-graph scan returns 8 blocks out of 67,213, four of them the multi-line briefings the original report was about.
+  Restoring is strictly additive by construction, and `restore_truncated_block` re-checks that instead of trusting it.
+  Read-only by default; `--apply` writes, and writes go through `block::edit_text` — a new op, never a rewrite of the log.
+
+- **`outl doctor --repair --force`, and a volume count before anything is written.**
+  The run that removed 1,426 lines from 233 pages printed `708 fixed` and no line count at all.
+  `doctor` now measures, per page, how many content lines the new projection would not reproduce, and reports it before writing — in `--repair` and in the default read-only mode alike.
+  Past 100 lines or 20 pages that lose content, page repairs stand down and `--force` is required.
+  A page the write only adds to counts as zero, so a device that just paired with the whole graph unprojected never trips it.
+
+### Fixed
+
+- **Desktop: a task in a backlink row could be read but not ticked.**
+  A tag page listed `TODO` blocks from everywhere, and checking one meant navigating to the source page, toggling, and navigating back — so the page that shows you all your open tasks was the one page you could not act on (issue #144).
+  Each backlink row now carries its own indicator and toggles the source block in place, with the surrounding list refreshed from `page_backlinks`.
+  Clicking the row's *text* still opens the source block, unchanged.
+  Thanks to [@SSamDav](https://github.com/SSamDav).
+
+- **A machine running only `outl mcp serve` never synced with anything.**
+  It wrote its ops to disk and no peer ever saw them; peers' ops never arrived either, and `outl peer status` on the other device just said "offline" with nothing to explain it.
+  Running the TUI once made the device appear, which is what made it look like the MCP server was broken rather than deliberately silent (issue #220).
+
+  It was deliberate, and the reasoning was sound as far as it went: iroh routes one endpoint per device identity, and every outl process here shares one, so a second endpoint steals the relay route and breaks the holder's sync **in both directions**.
+  The fix for that was to name the MCP server the loser — the GUI binds, everyone else writes to disk and lets it push.
+  That works right up until there is no GUI, and an agent driving `outl mcp serve` on a dedicated machine is a normal way to run outl.
+
+  The constraint was never "only the GUI" — it is "one live endpoint per device", which is a question about who got there first, so it is now answered by a lease (an advisory lock next to `identity.key`) instead of by client type.
+  Every long-lived client asks `outl_sync_iroh::build_transport`; the winner binds the endpoint and announces its writes, and the losers run the file poller and converge through the shared `ops/` dir exactly as before.
+  A GUI opened at login still keeps the endpoint, so nothing changes on a desktop machine.
+  With no GUI, the MCP server is the peer.
+  `outl sync` joins the same election and now stands down when it loses, instead of taking the route from a running process for 25 seconds — the process it would be taking it from was already pushing those ops out.
+  `outl peer status` takes the same lease for its probe and reports whoever already holds it, instead of racing a live transport for the endpoint.
+
+  **This moves the iroh identity under `$OUTL_DEVICE_DIR`, and that rotates the device's node id for anyone already setting that variable.**
+  `~/.outl/identity.key` now lives at `$OUTL_DEVICE_DIR/iroh/identity.key` when the variable is set — a container or sandboxed CI job that exports it comes back up under a new node id on first run and reads as offline to every existing peer until it is re-paired.
+  See [`docs/storage.md`](docs/storage.md) → `$OUTL_DEVICE_DIR`.
+
+- **Locking your phone no longer cuts the sync off mid-exchange.**
+  iOS suspends an app's sockets within seconds of backgrounding, so the delta sync in flight when the screen locked simply died.
+  Nothing was lost — the responder confirms durable ingest by closing cleanly, so an unconfirmed push is re-sent — but the desktop reported `peer did not confirm durable ingest` every single time, and the ops waited for the next window.
+
+  The two `BGTaskScheduler` windows could never have covered this: both are requests for a window *later*, at the scheduler's discretion.
+  The missing piece was a `beginBackgroundTask` assertion taken on `didEnterBackground`, which keeps the process resident for one last pass — and, just as importantly, lets an **inbound** sync a peer is mid-way through reach its confirmation instead of dying with the frame unsent.
+
+  Getting the release condition right turned out to be the hard part, and the first version had it wrong.
+  It waited for the forced-pass counter to *advance*, but `sync_now()` was fire-and-forget with no identity and the counter is global, so the flush read the **foreground** pass (mobile fires one every 3s) as its own completing, released the window ~250ms in, and let iOS suspend with its own request still queued — ending the sync it existed to finish.
+  `sync_now_seq()` now returns the sequence number of the request it enqueued, and the caller waits for `completed_sync_passes() >= seq` **plus** `peers_in_flight() == 0`, since a forced pass skips peers that already have a dial running and can therefore complete having dialed nobody.
+  The window is sized from `backgroundTimeRemaining` rather than a constant: one unreachable peer costs 5s direct + 10s relay, so a fixed 20s cap blew past a real budget with two peers and guaranteed the tear-down it was meant to prevent.
+
+- **Android gets background sync too, and it is the first Android-specific feature in this changelog.**
+  Android doesn't suspend sockets — it *freezes* the cached process (cgroup freezer, API 30+, ~10s after caching on 34+) — which produces the identical torn-down exchange.
+  Going to the background now requests an expedited `OneTimeWorkRequest` to finish the pass in flight, and keeps a 15-minute `PeriodicWorkRequest` for catch-up; both are skipped with zero paired peers.
+
+  **It is weaker than the iOS path and the docs say so rather than implying parity.**
+  The handover is a *request*, not an instant grant: between `ON_STOP` and the job starting the process can already be frozen, so the pass gets restarted rather than finished and the peer may still log one timeout.
+  Expedited quota is finite (~30 min/24h on Active), below API 31 there is no expedited path at all (a foreground service for a 20s sync would need a permanent notification), and force-stop drops everything.
+  The periodic worker has a sharper limit worth knowing: unlike iOS's `BGProcessingTask`, WorkManager starts the *process* but no Activity, so Tauri never boots and no transport is registered — it is a catch-up for a **frozen** app, not a killed one.
+
+  `bg_sync.rs` is now one platform-agnostic core with `cfg`-gated exports (iOS C ABI, Android JNI), so the shared bodies stay covered by the host test suite where neither platform's exports compile.
+  `androidx.work` is pinned to **≤ 2.10.5**: 2.11.x pulls `kotlin-stdlib:2.1.20`, whose metadata the pinned Kotlin 1.9.25 compiler cannot read, and that breaks every file in the module including Tauri's generated ones.
+
+- **A peer that went away mid-sync is amber, not red — and a peer that *refused* you is no longer silent.**
+  The Sync panel's only red row was, in practice, the one a locked phone produced on every screen lock: a working sync, reported as a failure.
+  It now renders as `interrupted` ("went away — will retry"), stays out of the activity feed, and does not pretend to be success — the pass is still an error internally and the peer is still re-pushed.
+
+  The inverse was worse.
+  A peer that **refuses** the dial (you were removed from its `peers.json`, or the workspaces differ) closes before writing a byte, so the initiator failed on a *read* and never reached the close-reason check — emitting nothing at all.
+  The one failure a user has to act on was the only one with no line in the panel.
+
+  Also moved the responder's `peers.json` refresh to **after** it confirms ingest, and onto a blocking thread.
+  It was blocking file I/O sitting between the fsync and the confirmation, widening the exact window in which a suspending peer ingests durably but dies before saying so.
+
+- **A redirected `$OUTL_DEVICE_DIR` now says so, once, at startup.**
+  The rotation above is intended, and it was also completely silent: the node id is only announced when it is *generated*, and `iroh endpoint bound node_id=…` never says which key it came from.
+  The one place it bites hardest is this repo — `.cargo/config.toml` exports the variable so the suite stays off the developer's real store, and cargo exports it to `cargo run` too, so a desktop built from source is a **separate device** whose key lives under `target/` and dies with `cargo clean`.
+  Pairing a phone against that build works, then stops working after the next clean, with the phone reporting only "offline".
+  `default_device_dir()` now logs one `WARN` naming the directory and how to opt out (`OUTL_DEVICE_DIR=`).
+  See [`docs/development.md`](docs/development.md) → Testing P2P sync from a source build.
+
+- **The first boot after an upgrade froze the app for 24 seconds.**
+  outl's premise is that it opens fast and is ready for input, and the `CURRENT_PIPELINE_VERSION` bump broke it: every sidecar goes stale by pipeline, so the first boot re-reconciles the whole graph.
+  Measured on a 2,827-file workspace: **24.7 seconds at 8% CPU** — not computation, but `write_atomic`'s two `fsync`s per sidecar, 5,656 of them back to back, for 44 ops of actual content.
+
+  Being on a worker thread was not enough. The pass reacquired the lock immediately after each page and kept the disk saturated for the whole batch, and the UI reads that same disk to paint, so the app felt frozen regardless of which thread the work was on.
+
+  Dropping the sidecar `fsync` would take it to 0.3 seconds and is the wrong trade: a rename landing before its data leaves a sidecar of garbage, which reads as a *missing* one, which mints a fresh ULID per block — the page duplicates and every `((blk-…))` handle breaks.
+  Skipping the migration is worse, since the parser fix then never reaches pages nobody opens.
+
+  So the pass yields instead. `BackgroundPace` sleeps in proportion to the work each page cost, holding a bounded share of the device, and the loop takes the workspace lock with `try_lock` so a click never waits behind a migration.
+  A slow disk makes it yield more rather than stutter more, because the ratio is the constant, not the delay.
+  Nobody needed the migration to be fast; it needed to be invisible.
+
+
+- **Markdown containing a blank line inside a block, or a block whose text carried its own indentation, lost everything after that point — silently, and then permanently.**
+  This is the producer behind [issue #210](https://github.com/outlmd/outl/issues/210), and it was not where [RFC 0210](docs/rfcs/0210-md-content-outside-op-log.md) guessed.
+  `render → parse` was not a roundtrip:
+
+  ```text
+  input:    a block whose text carries a blank line and its own indentation
+  render:   correct — every line emitted
+  parse:    one block, first line only
+  warnings: 0
+  ```
+
+  The `warnings: 0` is the part that mattered.
+  The parser's contract is that nothing is dropped in silence, and three separate arms of `parse_block_list` broke it: an over-indented line was recovered only at depth 0 and skipped mutely below it, a blank line inside a block's text was read as a separator (the renderer writes it indented; a real separator is empty — the indent tells them apart), and a continuation line's own indentation pushed it out of reach of the level that could have claimed it.
+  A fourth arm warned about an unplaceable line but dropped it from the AST anyway, on the reasoning that a guard in another crate would keep the bytes on disk.
+
+  The reconcile that followed then wrote the truncation into the op log as an `Op::Edit`, so the loss reached the one place the RFC had described as still holding the content.
+  Measured on a real 2,827-file workspace, running the same normalisation over both branches: pages holding unlogged content went from **41 to 8**, lines from **387 to 49**.
+
+  **The first version of this fix traded the bug for a worse one, three times over**, and none of the 237 green tests saw it — a five-minute probe against the real workspace saw all three.
+  `render → parse` has to be a **fixpoint**, not merely lossless, and the original bug at least converged while these mutated the document on every save:
+  a bullet at an irregular indent (`    - child`) was recovered as verbatim *text* carrying its own `- `, so each pass read one more level of nesting (`- parent\n  -     - child`, then `- parent\n  - - child`);
+  a whitespace-only line before a sibling appended a trailing `\n` to the previous block, which is invisible to the reader and a different `content_hash` to the log, so every page with that shape emitted an `Op::Edit` forever;
+  and a recovered block kept the leading indent the renderer then wrote *after* its own marker, so the file settled on the second save instead of the first.
+
+  The property is now stated as one — `render_then_parse_is_a_fixpoint_not_just_lossless` — and verified against all 2,827 `.md` files of a real workspace: **0 unstable, 0 losing a line**.
+
+- **Known cost, stated rather than filed away: withholding the hash invites an older peer in.**
+  A binary from before this release reads `last_synced_hash: ""` as "needs reconciling", reconciles with its own lossy parser, and emits an `Op::Edit` truncating a block the log held correctly.
+  Measured against a worktree of v0.11.0-beta.151, the build users actually have.
+
+  No value of the field avoids it: the old binary's two gates are complementary (`reconcile_md` when the hash mismatches, its re-projection when it matches), and a real hash is worse — it authorises deleting the unlogged content outright.
+  Two things bound the damage: no old write path preserves a `pipeline_version` it does not understand, so the page stays queued and a current binary heals it from the `.md`; and the truncation is an `Op::Edit`, so `outl recover` can read the revision before it.
+  Calibration on 2,827 real files: **0 pages trigger the withholding today** — this is a guard for the next parser gap, not for a live condition.
+
+- **The volume guard reported `0` lines removed in the exact scenario it was built for.**
+  `outl doctor` builds its reference from a **render**, and `content_lines_missing_from` carried a stand-down for "this reference cannot answer" — written for a pre-0.11 sidecar, where it is right.
+  A render of empty blocks hit the same branch, but it is a definitive answer ("the tree holds no text"), not an absence of one.
+  So a repair that would empty a page printed *"removes nothing"* and sailed past the `--force` threshold — the run that guard exists to stop.
+  Measured: 4 content lines on disk, tree rendering `-\n-\n`, reported 0.
+
+  The condition now lives at each call site, next to the knowledge of where the blocks came from, which is the only place that can tell a sidecar from a render.
+
+- **The post-mutation guard wrote anyway when the sidecar could not be read.**
+  Missing, corrupt, and written-by-a-newer-binary are three states where "does the log know this line" has one honest answer: *I cannot tell*.
+  The first version used `if let Ok(sidecar)` and fell through to the write on all three, so the page the read path protects was overwritten on the next keystroke commit — the door this guard was added to close, standing open on a different hinge.
+  Liveness is not at risk: `needs_reconcile` maps an unreadable sidecar to `true`, so the orphan pass rebuilds it and the page projects on the pass after.
+
+- **Withholding the hash made the page invisible to every warning the same release added.**
+  `reconcile_md` writes `last_synced_hash = ""` when it read content it could not log, and every gate downstream tests hash-equality — so `apply_page_md_with_sidecar_if_stale` returned `Ok(None)`, no `PageMarkdownAheadOfLog` was raised, and the banner never appeared.
+  `doctor` counted the page as an ordinary pending edit and never named it.
+  The producer fix was erasing the signal built to report it.
+  Both now treat the empty hash as what it is — withheld, not stale — and ask the content question anyway.
+
+- **A local edit deleted the unlogged lines the open path had just refused to touch.**
+  The re-projection guard covers the paths that *read* a page.
+  The background projection writer runs after a real mutation and wrote unconditionally, so the very deletion `apply_page_md_with_sidecar_if_stale` declines happened anyway on the next keystroke commit — same invariant 8, a door nobody had checked.
+  Found while wiring the warning banner for the first door.
+
+  `apply_page_md_with_sidecar_guarded` is the post-mutation counterpart, and it cannot just call `_if_stale`: that one declines whenever the `.md` carries an unreconciled external edit, which is the state a page is in *while the user types into it*.
+  So it asks the one question that matters — does the file hold content the log cannot account for — and skips the projection if it does.
+  The edit is never at risk either way: it went through `Workspace::apply` and lives in the op log, and only the on-disk projection lags, which is the recoverable direction.
+  Every GUI write path now routes through it (`ProjectionWriter`, block move, template instantiate).
+
+- **The unlogged-content check reported content the log already had, and that verdict freezes a healthy page.**
+  A bullet inside a code fence lives in the block's text **with its marker**, because the renderer only adds one for a block's first line.
+  The disk side stripped the marker anyway, so `- endpoint:` on disk never matched the `- endpoint:` the log held, and 8 pages of a real workspace were told they carried 49 lines of unlogged content they did not carry.
+
+  That is not an advisory verdict: it withholds `last_synced_hash`, refuses the page's re-projection, and reconciles it on every boot forever — the exact failure mode [RFC 0210](docs/rfcs/0210-md-content-outside-op-log.md) names as the worst one available.
+  Each disk line is now tried in both shapes, stripped and verbatim, which widens *how* a known line may match and never *which* lines are known — a line the log genuinely lacks still fails both lookups.
+  Residue on the reporting workspace: **0 pages, 0 lines**.
+
+- **`crates/outl-md/tests/corpus_gate.rs` — the throwaway probe became a test.**
+  Every defect this issue produced, the original and all four regressions introduced while fixing it, was found by running code over 2,827 real `.md` files; none by the unit suite, which was green at every one of those moments.
+  Three properties now run in CI over `tests/corpus/`, a set of files reduced from the real shapes: no line is lost, `render → parse` is a fixpoint, and the unlogged-content check does not cry wolf.
+  The maintenance rule is one line — when a `.md` bug is found in the wild, its shape becomes a file in that directory.
+
+- **`CURRENT_PIPELINE_VERSION` 3 → 4, so the parser fix actually reaches existing workspaces.**
+  A page that the old parser truncated is hash-faithful, and `reconcile_md`'s short-circuit consults only the hash — so a fixed parser never looks at it again and the content stays outside the log forever.
+  The bump makes every sidecar stale by pipeline and turns the first boot into a one-shot migration, which is the same mechanism version 3 used for the same reason.
+
+  It was missed in the first version of this change and caught in review.
+  Worth naming because of *where* the failure is invisible: on the author's machine the recovery commands get run by hand, so nothing looks wrong, while every other user keeps content outside the log with no symptom at all.
+
+- **`reconcile_md` claimed the op log held content it had never emitted an op for.**
+  Writing `last_synced_hash` is the claim "the log holds what is in this file", and every consumer downstream believes it.
+  `outl-md`'s invariant 8 already said the hash may only advance over content the same call emitted ops for — as prose, with no code checking it and no test pinning it.
+  It is now enforced: the hash is withheld when anything is unaccounted for, leaving the page dirty so the next pass looks at it again, and `ReconcileReport.unlogged_lines` carries the count.
+  A page that reconciles twice is a nuisance; a page that lies about its own state is a data-loss bug.
+
+  With the parser fixed this fires on nothing, which makes a **false positive** its real failure mode — a permanently dirty page, across 2,560 of them.
+  So the test that matters asserts the hash still advances for 17 shapes taken from the pages that actually held unlogged content: Roam's tab-indented ordinals and `*` bullets, a `U+2029` pasted from a PDF, non-breaking spaces, fences, properties followed by prose.
+
+- **Matching level 3 deleted one block and five thousand the same way.**
+  A `.md` that arrived truncated — an undownloaded iCloud placeholder, a half-flushed write — emptied a page as quietly as deleting a bullet.
+  `reconcile_md` now goes through `match_blocks_guarded`, which refuses past 500 orphans or 75% of a page (once it has at least 20 blocks).
+  The refusal covers the whole pass rather than shortening the orphan list, and is safe by construction because `match_blocks` is pure — refusing after it ran is refusing before anything exists to apply.
+
+  `outl reconcile --allow-bulk-delete` is the way to say the deletion was meant.
+  It needs its own mode rather than riding on `--ahead-of-log`, and the reason is that the two select **opposite** sets: `--ahead-of-log` visits pages whose `.md` holds *more* than the log, while a page the guard refused holds *less*, so `content_lines_missing_from` is zero and it never appeared in that list.
+  Wiring the flag only there — which is how it first shipped — left it unreachable for every page it existed to unblock, the "guard with no escape hatch is a wall" failure invariant 9 names, arrived at through the door marked "fixed".
+  `the_escape_hatch_applies_a_deletion_the_guard_refused` fabricates the refusal and resolves it, instead of asserting that a flag parses.
+
+- **`apply_page_md_with_sidecar_if_stale` read the sidecar twice with no lock between the reads**, so the hash that authorised the write and the blocks that validated it could describe different revisions.
+  This is the same defect `reconcile_md` had already fixed and documented.
+  It also now declines to write when the sidecar *cannot* answer the question at all (every one written before 0.11 carries `text: ""`): an empty verdict from a reference that could not check is not permission to overwrite, and reading it as one is how the page gets emptied.
+  `sidecar_can_answer` names that condition next to the stand-down it mirrors, so the two cannot drift.
+
+- **`desync::recover_desynced_projection` re-projected over text the op log had never seen.**
+  "Strictly additive" covered structure, not text: a block whose id the tree already knows kept the tree's text, so recovery overwrote what the `.md` said for it — and the ordinary offline session produces exactly that pair.
+  It keeps the recovered ops and no longer rewrites the file.
+
+- **The re-projection guard refused to update any page a peer had edited or deleted from, and the recovery command reverted the peer.**
+  Found in code review of the commit that introduced it, by an executable probe, after 1,687 tests and a green `/check` had not.
+  `content_lines_missing_from` compared the `.md` against a fresh render of the tree, which answers _"do disk and tree disagree"_ — and every remote edit answers yes to that, since the pre-edit line is on disk and absent from the render.
+  So did every remote delete and every reorder.
+  The page then froze showing pre-edit text with nothing surfaced to the user, which is [issue #166](https://github.com/outlmd/outl/issues/166) reintroduced for the most ordinary sync case there is.
+  Worse, `outl reconcile --ahead-of-log` (which the error message and `doctor` both recommended) wrote the pre-edit text back as ops on such a page, reverting the peer permanently, since the log is append-only.
+
+  The reference is now the **sidecar's blocks**, which are what the log held at the last agreement, so the question asked is the one intended: _does the op log know this line_.
+  The bullet marker, indent and trailing whitespace are normalised away — they are the renderer's layout, not content, so a pure indent no longer reads as new text — and `key:: value` lines are skipped, since a property is never part of a block's `text`.
+
+  One consequence worth stating: a sidecar whose blocks carry `text: ""` cannot answer the question at all.
+  That is **every sidecar written before 0.11**, when the field was added — measured on a real workspace, 7,400 blocks with not one populated.
+  Answering anyway flagged 615 pages holding 35,261 lines against the 233 / 1,426 that are genuinely unlogged, which would have frozen most of the graph instead of guarding it, so such a sidecar does not get to veto the write.
+  The `CURRENT_PIPELINE_VERSION` bump rewrites them on first boot and the guard arms itself from there.
+  On the measured workspace the post-migration count is **29 pages / 261 lines**, down from the 79 / 909 the render-based comparison reported.
+
+## [0.12.0]
+
+### Changed
+
+- **BREAKING — `ActionError` gains a third variant, `PageMarkdownAheadOfLog { path, lines, sample }`.**
+  The enum is `pub` and not `#[non_exhaustive]`, and `outl-actions` ships to crates.io, so a downstream `match` that enumerates every variant needs updating.
+  Same shape as 0.11.0's two-variant addition.
+
+- **BREAKING (behaviour) — `apply_page_md_with_sidecar_if_stale` now returns `Err` on a page it used to rewrite successfully.**
+  Louder than the type change and easier to miss: the signature is unchanged, so an embedder treating `Ok(None)` as "nothing to do" and `Err` as "something is broken" will start seeing errors on pages that previously re-projected silently.
+  The error is the correct outcome — see the fix below — but code that logs and continues will now log where it used to be quiet, and code that aborts on any `Err` will stop where it used to proceed.
+
+- **BREAKING (behaviour) — `DeviceStore::machine_id()` no longer overwrites a machine id minted by a racing process.**
+  It mints through a compare-and-swap and adopts the winner on `AlreadyExists`.
+  An embedder that relied on the last writer winning gets the first writer instead.
+  The deliberate remint-a-clone path still overwrites, because that is a replacement, not a race.
+
+### Fixed
+
+- **`outl init` racing `outl serve` on a fresh machine could permanently break that workspace's actor claim.**
+  `DeviceStore::machine_id()` minted with a plain write while `bind()` used a compare-and-swap.
+  Two processes reaching a fresh store both minted an id and the last writer won; `init` then stamped `actor_claimed_by = <machine>` into `config.toml`, the next `open` read a machine id someone else had reminted, the claim read as foreign, and the workspace forked an actor.
+  Reproducible 6 times out of 6 from a cold store, not intermittent — which is why it read as three flaky `doctor` tests for as long as it did.
+
+  Two further defects surfaced underneath it, and the second was the dominant cause:
+  1. **The compare-and-swap failed open.**
+     `create_new_record` used a bare `O_EXCL` open, which creates an **empty** file and fills it a moment later.
+     Every reader maps a blank record to `None` — "absent" — which is precisely the answer that licenses overwriting.
+     It now composes the content in a temp file and publishes with `link(2)`, so the record appears complete or not at all, falling back to the old open where the filesystem cannot link rather than breaking on FAT media.
+  2. **Concurrent writers shared one temp file.**
+     `scratch_path` keyed the scratch name on pid alone, and test threads share a pid, so two writers used the same path: one `fs::write` truncated into the other and the publish step shipped a record neither writer composed.
+     The name is now unique per call.
+
+  Pinned by `concurrent_first_opens_converge_on_one_machine_id`, verified non-vacuous against both old code paths (16 distinct ids with the old mint, 2 with the old scratch path), plus `outl-ws`'s `device_isolation` test as its complement rather than its copy.
+
+- **Opening a page could delete content that had reached the `.md` but never the op log.**
+  Re-projection was gated on one question — does the sidecar's `last_synced_hash` match the bytes on disk? — and a `.md` that answers yes was treated as a merely _stale_ projection, safe to overwrite with a fresh render of the tree.
+  But that hash proves the sidecar agrees with those bytes; it never proves the bytes came from the log.
+  A `reconcile_md` that rewrites the sidecar without emitting ops for everything it read leaves a page in exactly that state, and re-rendering over it destroys the difference _and_ rebuilds the sidecar from the same render — so no later scan, and no `doctor` check, could tell the page had ever held more.
+  Silent by construction, which is the shape this project treats as the worst kind of bug.
+  Measured on a real 2,560-page workspace: **233 pages holding 1,426 lines** in that state.
+  `outl doctor --repair` deleted all of it and reported `708 fixed`.
+  Worse, `--repair` was not the only path — `apply_page_md_with_sidecar_if_stale` runs on **every** GUI open (`open_page_by_slug`, `open_journal_for`, `open_today_journal`, `open_ref`), so a plain page open in the desktop or mobile app was enough.
+  `outl_actions::content_lines_missing_from` is now the single owner of the verdict, and `apply_page_md_with_sidecar_if_stale` returns the new `ActionError::PageMarkdownAheadOfLog { path, lines, sample }` instead of writing.
+  It compares a **multiset** of trimmed non-blank lines rather than running a diff, because a line the renderer merely _moved_ is not at risk — on that same workspace an LCS diff flags 616 pages where only 233 genuinely hold unlogged content.
+  Whitespace-only drift is ignored on purpose: the renderer's trailing-newline behaviour changed across releases, and treating that as content would strand every genuine re-projection behind noise.
+  `outl doctor` calls the same function in its read-only listing, so it can no longer offer a repair the `--repair` pass then refuses (the "announced before they run" invariant), and names the count plus one of the lines at risk instead of only counting them.
+  Content in this state also never reached your other devices — peers exchange ops, not files — so the report says that too.
+  `outl reconcile` owns the `.md → tree` direction and remains what brings it into the log.
+
+- **`docs/query.md` rendered 46 lines as one code block, and four headings produced no anchors** (issue #214).
+  A three-backtick outer fence wrapping an inner ` ```query ` example closed at the _indented_ inner closer instead of its own, so everything from line 115 on was inside a code block.
+  `## Relationship to {{query: ...}}`, `## Extensibility`, `## Architecture` and `## Plugin SDK API` were swallowed, which broke four links — two of them pre-existing in `docs/plugin-api.md` and `docs/plugins.md`, dead long enough that nobody had noticed.
+  The file already used a four-backtick fence for the same pattern 90 lines earlier.
+
+### Added
+
+- **`outl reconcile --ahead-of-log` — the `.md → tree` direction on pages the ordinary reconcile cannot see.**
+  A page holding content the op log never saw is _hash-faithful_: its sidecar agrees with the bytes on disk, so `needs_reconcile` reads it as in-sync and skips it.
+  Fixing the parser that produced that state does not recover anything by itself, which took measuring to notice — `serve --once` applied **0 ops** to all 233 such pages on the measured workspace.
+  The flag clears the recorded hash on exactly the pages `doctor` names and reconciles them, which emits ops for that content.
+  Opt-in on purpose, and it prints the page count and line count before it writes: this is a deliberate write, not a repair.
+  Detection is `outl_actions::content_lines_missing_from` against the sidecar's blocks, the same owner `doctor` and the write-side guard use, so the three cannot disagree about which pages qualify.
+  Run it only on a build whose parser preserves the content — reconciling with one that still drops prose after a block property writes the truncated text into the log, which is the one place the loss currently is not.
+
+- **`CURRENT_PIPELINE_VERSION` goes 2 → 3, which recovers the existing content without a command.**
+  The constant exists to force a re-reconcile when the pipeline could produce a different op log for the same `.md`, and a parser that now reads prose it used to discard is exactly that.
+  Every existing sidecar becomes stale by pipeline, so the first boot per device is a one-shot migration: **323 ops applied, 233 pages down to 79** on the measured workspace, and 29 after the guard was corrected to compare against the sidecar.
+  One slower boot per device, additive (the change only ever captures _more_ text), and crash-safe, since the stamp is per page so partial progress is kept.
+
+- **RFCs: `docs/rfcs/`, 16 documents, and a process that ties reasoning to an enforceable rule.**
+  outl already recorded evolution in four places (a lone RFC, the decision table in the root `CLAUDE.md`, `CHANGELOG.md`, `docs/design/`), so a fifth format would have broken the one-owner-per-fact rule that keeps the shortcut and CLI tables from diverging.
+  ADRs were considered and rejected for a sharper reason: **an ADR would not have prevented the bug that prompted this.**
+  Issue #166 was documented — issue, changelog entry, code comment explaining the gate.
+  What was missing was not a record of the decision taken; it was the question nobody asked, _and in the opposite direction?_
+
+  So the template makes that a **required, non-deletable section**, and the process ties every RFC to an invariant and a named test:
+
+  | Layer     | Where                         | Role                                                     |
+  | --------- | ----------------------------- | -------------------------------------------------------- |
+  | Reasoning | `docs/rfcs/NNNN-*.md`         | Why the rule exists, what was rejected, what got worse   |
+  | Rule      | root or per-crate `CLAUDE.md` | Read on every edit to that crate — the enforcing surface |
+  | Proof     | a named test                  | Fails mechanically when someone reverts the behaviour    |
+
+  A rule with no RFC has no rationale and gets argued away in review; an RFC with no `CLAUDE.md` entry is never read at the moment it matters; either one without a test is a comment.
+  **Changing behaviour an RFC pinned means updating that RFC in the same PR** — amend, or supersede and mark the old one.
+  The RFC number **is** the issue number, so there is no second sequence to keep in sync.
+  Flow, "do I need an RFC?", and the retroactive triage live in [`docs/rfcs/README.md`](docs/rfcs/README.md); the four-step issue → discussion → PR-with-RFC → review path is in [`docs/contributing.md`](docs/contributing.md).
+
+  Of 78 closed issues, **27 carried decision content and collapsed into 14 retroactive RFCs**; the other 51 are changelog-only.
+  The collapsing is the point — eight keybinding issues tell one story about `outl-shortcuts` being the single catalog, so they are one document, not eight.
+
+  Writing them also corrected the record twice: **#179's Front B never shipped** (`actor_census` still does a full `all_ops()`, so the ~35 s delta was only half improved), and **#25 shipped inverted** (Boa primary, not the QuickJS-primary its own proposal described).
+  Five behaviours nothing pins are recorded as `none found — gap` rather than papered over with invented test names (issue #213).
+
+- **Invariants 8 and 9 in the root `CLAUDE.md`, each with the incident that produced it.**
+  Invariant 8: a sidecar hash match proves outl wrote those bytes last, never that the op log holds them.
+  Invariant 9: when state crosses a boundary, the RFC that moves it must say what the new home requires — **who writes it, who reads it, how a test gets its own copy, and what cleans it up.**
+  0.11.0 moved the write actor out of the workspace correctly and left question three unanswered; question four is still open (nothing prunes a workspace the user deleted).
+
+  Both generalize to one rule, stated in the root file: **a fix relocates a problem far more often than it removes one.**
+  After "did I fix it?" comes "where does the problem live now, and what does that place require that the old one did not?"
+  Three separate defects in this codebase came from skipping it.
+
+### Changed (tooling and docs)
+
+- **`.github/copilot-instructions.md`: 39,980 → 10,548 chars, split into path-scoped instruction files** (issue #215).
+  It sat ~20 chars under the size ceiling and roughly six times over GitHub's own "no longer than 2 pages" guidance, which made the two hooks contradict each other: adding a required catalog mirror row overflowed `markdown-size-guard`, while `catalog-sync-guard` required that row to exist.
+  Now four `.github/instructions/*.instructions.md` files carry `applyTo` globs and load **in addition** to the repo-wide file, so a Solid PR no longer pays for the Rust bar plus 17k of Rust primitives catalog.
+  `markdown-size-guard` already covers the new files: `*` matches `/` in a bash `case`, so `.github/*.md` reaches into `.github/instructions/` on its own.
+  Note for anyone adding a rule: **there is no include mechanism** — each file loads whole or not at all, so anything that must always apply belongs in the repo-wide file.
+
+- **Three per-crate `CLAUDE.md` files were at or over the 40k ceiling; extracted to reference docs** (issue #216).
+  `outl-mobile` 42,345 → 32,265, `outl-desktop` 41,435 → 34,560, `outl-sync-iroh` 39,998 → 32,955.
+  New docs with real owners: `docs/iroh-internals.md`, `docs/ios-platform.md`, `docs/deep-links.md`; the rest went into `development.md`, `reminders.md`, `plugin-architecture.md`, `theming.md`.
+  Movement, not rewriting — of 350 lines removed, 338 exist verbatim in the destination, and each stub keeps whatever in it was genuinely an invariant.
+  The extraction surfaced seven documentation contradictions, filed as issue #212, including desktop settings documented at a path the code no longer reads.
+
+- **43 links now connect RFCs and docs in both directions**, including a `Reference doc` row in every RFC header (and in the template, so new RFCs inherit it).
+
+- **Qodo's code review is now configured by `.pr_agent.toml` in the repo, not in its web portal.**
+  A repo-local `.pr_agent.toml` outranks portal settings, so a knob changed in the UI would have silently disagreed with what is committed — and nobody reading a PR could tell which one won.
+  Five keys, no copied defaults: `repo_context_files = ["CLAUDE.md"]` (the default `AGENTS.md` does not exist here), `ignore_pr_title` extended with WIP/DRAFT while preserving the upstream `^Auto` entries the key would otherwise replace, `expand_evidence` so the file:line citations open by default, and two guideline blocks that name the failures this repo has actually shipped — the mirrored-divergence rule from RFC 0210, the hash-is-not-membership rule, guards a sentinel disarms, convergent state outside an `Op` from RFC 0211, and the four questions invariant 9 asks of state that moves.
+  Automation (`pr_commands`, `push_commands`) is deliberately absent: that key replaces the default list rather than extending it, so writing it out would quietly drop whatever the platform adds later.
+
+  No `best_practices.md` was added, though Qodo imports one if present.
+  Its rule import already reads root and per-crate `CLAUDE.md` and scopes each file's rules to the directory holding it at any depth, so `crates/outl-md/CLAUDE.md` is stricter inside that crate and silent elsewhere for free.
+  A `best_practices.md` would be a second copy of rules `CLAUDE.md` owns, and the copy is the one that goes stale.
+  One gap worth knowing: Qodo does **not** read `.github/instructions/*.instructions.md`, so anything that must reach both it and Copilot belongs in a `CLAUDE.md`.
+  Documented in `docs/contributing.md` → "The automated reviewers", which now maps each of the three review bots to the file that configures it.
+
+## [0.11.0]
+
+### Changed
+
+- **BREAKING — `DeviceStore::actor_for_workspace` / `set_actor_for_workspace` become `actor_for_instance`.**
+  The write actor is now keyed by `WorkspaceId` **plus the canonical root path**, so a copied workspace directory forks its own actor instead of sharing an op log, while a moved or renamed one keeps the actor it had.
+
+- **BREAKING — a workspace created before the claim marker forks a new actor on every device, once.**
+  One extra `ops-<actor>.jsonl` per device; the legacy log stays on disk and is still merged on read, so nothing is lost.
+  This is the cost of closing the shared-actor hole below, and it is paid once.
+
+- **BREAKING — reads that used to return a short or empty result now return an error.**
+  `read_page_outline`, `Storage::ops_since`, `ops_for_actor` and `ops_since_per_actor`.
+  A short read is indistinguishable from a healthy one, which is exactly how ops went missing without anything surfacing.
+
+- **BREAKING — `SidecarBlock` gains a `text` field and `ActionError` gains two variants.**
+  Both are `pub` and neither type is `#[non_exhaustive]`, so a literal `SidecarBlock { .. }` or an exhaustive `match` on `ActionError` downstream needs updating.
+  Build sidecar entries through `SidecarBlock::from_text`, which keeps hash, handle and stored text derived from one revision.
+
+### Fixed
+
+- **Four paths that could lose your content without saying so.**
+  All four were silent by construction: nothing errored, nothing appeared in a log, and the state left on disk looked healthy to every consistency check outl had.
+  That is the specific thing that makes a notes app untrustworthy — you find out weeks later, from a page that is now blank.
+  1. **A failed read could overwrite a page with nothing.**
+     Every read-parse-mutate-write path opened the `.md` with `read_to_string(..).unwrap_or_default()`.
+     A read that failed for any reason other than "the file isn't there" — a permissions change, a raw `EIO`, invalid UTF-8, or an **iCloud placeholder whose bytes hadn't downloaded to this device yet** — parsed as an empty document, rendered, and atomically replaced the page with nothing.
+     The sidecar was then rebuilt from that same empty parse, so its hashes agreed with the file and no later scan could tell the page had ever had content.
+     Reads on a rewrite path now go through `outl_md::read_for_rewrite`, where a missing file is empty and **every other I/O error propagates**.
+     The TUI additionally refuses to save a page it could not read, and says so.
+  2. **The desktop, mobile and undo paths reconciled with the orphan log switched off.**
+     `outl-md`'s hard rule is that a block dropping to matching level 3 is recorded in `orphans.log` _before_ it is moved to the trash.
+     Four call sites passed `None` for that log, so on those clients the deletion happened with no record anywhere — the exact case a half-synced `.md` from iCloud produces at boot.
+     `outl_actions::sync::orphans_log_path` is now the one owner of that path — every caller passes it, and `outl_ws`'s `Paths::at` derives its `orphans` field from it instead of re-joining `.outl/orphans.log` itself.
+  3. **One unreadable line truncated the whole op log.**
+     The sequential replay hit an I/O error and `break`, discarding every op _after_ it.
+     A transient failure on line 5,000 of 200,000 booted a workspace containing the first 5,000 ops and carried on as if that were everything.
+     It now skips the damaged line and continues (with a cap on consecutive failures), matching how a corrupt or non-UTF8 line was already handled two lines below.
+  4. **A snapshot could record an op it never applied.**
+     The index-driven reads dropped an op the offset index listed but disk wouldn't return.
+     Because the next snapshot's cutoff is derived from that same index, the omission was written down as "already folded in" — and no later boot would ever replay it again.
+     Permanent loss, with the bytes still on disk.
+     Those reads now fail with `MissingOp` and snapshot boot degrades to a full replay, which re-reads the file and recovers everything around the damage.
+
+  Pinned by regression tests, including fault injection — there were previously **no** tests that forced an I/O read to fail, so all four passed a green `/check`.
+
+- **`.md` and sidecar writes now fsync the parent directory after the rename.**
+  `rename` is atomic for readers, but the directory entry it creates is only durable once the directory itself is synced.
+  APFS and ext4's default `data=ordered` usually paper over this; other filesystems don't.
+
+- **External edits no longer break block references in the common case.**
+  Editing a `.md` outside outl in a way that both **rewords one block and adds or removes another** made the block counts disagree, which disabled the positional fallback and sent every reworded block to matching level 3: fresh ULID, old id trashed, and every `((blk-…))` pointing at it dangling.
+  That is the _ordinary_ external edit, not an exotic one.
+  Level 2 of the documented matching algorithm is now implemented (normalized Levenshtein > 0.8 against the previous text, which the sidecar keeps in the `text` field — additive, still version 2), so the id **and** its ref handle survive.
+  The positional fallback also compares real parents instead of indent depth — same depth in a different subtree used to hand one subtree's id to another block.
+
+- **The actor id no longer lives inside the workspace.**
+  "One `ops-<actor>.jsonl` per device, never shared" is what makes last-write-wins-per-file harmless, and it was only true by accident: the id sat in `<root>/.outl/config.toml`, and the only transport that didn't replicate it is iCloud (which drops dot-prefixed paths).
+  On Syncthing, Dropbox, NFS, a shared volume or a `git clone`, both devices read the same actor and appended to one file — `flock(2)` is advisory and machine-local, so each acquired its lock successfully and ops vanished with nothing raised.
+  The write actor is now resolved from a device-local store outside the workspace, keyed by `WorkspaceId`, with a migration that keeps an existing device on its existing op file.
+
+### Added
+
+- **Local backups (`outl backup init` / `now` / `list` / `restore` / `status`).**
+  The op log is append-only and every write is atomic, but that only covers the failures outl was _designed_ for.
+  It had no answer for a bug in a projection path, an `outl import` aimed at a workspace that already had pages, a sync tool resolving a conflict the wrong way, or a page deleted with the app then closed (undo is in-memory and dies with the process).
+  For all of those, the recovery story was "reconstruct it by hand from `ops-*.jsonl`".
+  Git-backed — the `git` binary, not `libgit2`, so nothing new reaches a dependent's `cargo deny`.
+  Captures `ops/`, `pages/`, `journals/`, `templates/`, `assets/` and `.outl/config.toml`; excludes the caches the next boot rebuilds.
+  **`restore` never writes in place.**
+  It extracts to a directory you name — and refuses one inside the workspace — so you diff and choose what to bring back; a recovery tool that overwrites the live op log is the last thing you want when something has already gone wrong.
+  `[backup] enabled` defaults **on**, for the same reason reminders do: the failures it catches are ones you discover _after_ the moment you could have turned it on.
+
+  **The repository is device-local and lives outside the workspace**, at `<device-dir>/backups/<slug>-<hash>.git` with the workspace passed as `--work-tree`, so **nothing is written inside the workspace** — no `.git/`, no pointer file.
+  That single decision closes two problems at once: a `.git` inside the workspace would ride Syncthing / Dropbox / NFS (object store, `index`, `HEAD`, `index.lock` over eventual sync — the same class of bug the actor-id move exists to fix), and a workspace you already keep in _your own_ git repo would have had outl staging over your index, committing to your branch, running your hooks, and tripping your `commit.gpgsign` into a Touch ID prompt per snapshot.
+  Now outl's snapshots use their own git dir, own branch, own identity (`outl backup <backup@outl.app>`), hooks disabled, signing off.
+  Your repo is never touched, and backups keep working for the people who version their notes — the ones with the most to lose.
+  **A `.gitignore` cannot silently drop your data**: `ops/`, `pages/`, `journals/`, `templates/`, `assets/` and `.outl/config.toml` are force-staged, and every snapshot is **verified** afterwards — an op log missing from the commit is an error, not a green checkmark.
+  **The automatic pass is real**, not just a config key: a background thread snapshots on the `[backup] interval_minutes` floor (derived from git itself, no state file), wired into the TUI today.
+  `docs/config.md` names exactly which clients run it, rather than implying all of them do.
+
+- **`outl doctor` now checks what it couldn't, and `--repair` fixes what is safe to fix.**
+  New checks: corrupt `.jsonl` lines (named by line number, byte offset and reason — previously the one gap the code itself admitted to), snapshot integrity, offset-index coherence, blocks sitting in the trash (previously invisible to the user entirely), sync-conflict copies from iCloud / Syncthing / Dropbox, and ops the materialized tree never applied.
+  `--repair` re-projects a stale `.md` from the op log, rebuilds a missing sidecar, drops a corrupt snapshot, and prunes stale `.outl/repair-backup/` generations — nothing else.
+  It never deletes a `.md`, never writes into `ops/`, never trashes a block, and copies every file it touches to `.outl/repair-backup/<timestamp>/` first.
+  All four are announced before they run, so the read-only listing and the repair pass can't disagree.
+  A run whose only work is a prune still happens — a workspace with nothing wrong with it is the one that would otherwise hoard backups forever.
+
+- **The Roam importer now tells you what it didn't bring over.**
+  It reports `pages: N/M` and `blocks: N/M` against counts taken from the source JSON, subtracting only the reductions it can name (blocks lifted into page properties, journals merged, pages skipped) and shouting when the books don't balance.
+  Four silent losses are now counted or refused: a `{{[[TODO]]}}` in the middle of a block (which becomes literal text and loses its task state — it is _counted_, aggregated into one warning rather than thousands), a page with an empty title (which used to be dropped along with its entire subtree, with no record), and re-importing into a populated workspace, which **overwrote the `.md` files and reconciled the result — destroying anything written in outl since the last import**.
+  That now aborts and asks for `--force`.
+
+- **`remind::` — a block-level reminder rule that turns a TODO into an OS notification, on desktop and mobile (issue #63).**
+  A `[[2026-12-12]]` was only ever good for **recall**: it put a backlink on that day's journal and then waited for you to open the app.
+  If you didn't, the reminder was silent.
+  Now a block can carry a rule that reads as English — `remind:: 3pm every 1h until DONE` — and the OS tells you.
+  **Opt-in on purpose:** a `[[date]]` alone still schedules nothing, because plenty of people use dates purely for backlinking, and the moment a link becomes a buzz the linking stops.
+  The grammar is `TIME ("every" INTERVAL)? ("until" STOP)? ("max" N)?` — `10am`, `15:00`, `now`, `every 30min`/`1h`/`2d`, `until DONE`/`until 6pm`/`until 2026-12-20`, `max 5`.
+  Caps are a 1-minute interval floor (a sub-minute nag is never what you meant, so it's rejected rather than silently rewritten) and a 10-fire ceiling (clamped, with a warning).
+  A rule the parser can't read **never costs you the property or the block** — it stays on disk verbatim and just doesn't schedule, surfacing in the parse banner and `outl doctor` like every other dialect recovery.
+  **The schedule math has exactly one owner**, `outl_actions::reminders::next_fire_at` — pure, clock-free, `now` passed in.
+  The TUI overlay, the desktop panel, the mobile sheet and every OS bridge call it; a second opinion in TS or Swift about when a reminder fires is drift that reaches the user at 3am on one device before it reaches a test.
+  Two behaviours worth knowing: a device that was asleep owes you **one** banner, not a backlog (close the laptop at 10:00 on an hourly rule, open it at 18:00, get one reminder), and a block with two `[[date]]`s schedules on **both**, because you wrote both on purpose.
+  **Snooze converges** via the new `Op::SnoozeRemind` — silencing a nag on the phone silences the same block on the laptop.
+  The device-local half ("this device already buzzed you") deliberately does _not_: it lives in `<root>/.outl/reminders-fired.json`, a dotfile iCloud drops and iroh never ships, pruned at 7 days.
+  **Quiet hours** (`[reminders] quiet_hours = "22:00-07:00"`, device-local, unset by default) push a fire to the window's end rather than dropping it — you asked for it, you get it, just not at 3am.
+  Delivery itself (`[reminders] enabled`) is **on** by default: writing `remind::` is already the opt-in, and a device that never gets a rule never fires, so defaulting off only bought you a rule that silently did nothing.
+  A fire pushed past its own `until` is genuinely over.
+  Surfaces: **TUI** `g r` / `g R` to author and `g n` for the overlay (`Ctrl+R` was the obvious chord and is already Redo — a terminal can't tell it from `Ctrl+Shift+R`); **desktop** `Cmd+R` to author, `Cmd/Ctrl+Shift+R` for the panel; **mobile** long-press → _Remind me…_, bell icon for the list.
+  **All three deliver**, including the TUI, which fires an OSC 9 desktop notification plus a toast on its event-loop tick (OSC 9 is the sibling of the OSC 52 the yank path already uses, honoured by iTerm2 / kitty / WezTerm / ghostty, and the toast covers the emulators that ignore it).
+  That is why `take_due` and the fired log sit in `outl-actions` rather than behind the Tauri layer, which the TUI can't reach.
+  `g s` snoozes the block under the cursor an hour without opening the list, on both keyboard clients.
+  On **mobile** the Reminders sheet carries the two device-local settings itself (a delivery switch and quiet hours as native time pickers), because the app has no settings screen and `config.toml` lives inside the iOS sandbox — without them the sheet could say "notifications are off" and offer nothing to do about it.
+  Its rows also mark a task DONE, matching the desktop panel.
+  **Scope, stated plainly:** notifications fire whenever the app is running, foreground or backgrounded, on macOS / Linux / Windows / iOS, and while the TUI is open.
+  **Delivery with the app fully closed does not ship in this change** — the iOS `UNCalendarNotificationTrigger` pre-registration (64-request cap, `BGAppRefreshTask` refill), the macOS launch agent, the Windows scheduled toast and the systemd user timer are tracked as follow-ups on issue #63.
+  A reminder for a day you never open outl will not reach you yet; worth knowing before relying on it for something that matters.
+  Full spec: [`docs/reminders.md`](docs/reminders.md).
+
+- **Embedded assets now render: `![alt](url)` shows an inline image on desktop/mobile and a placeholder in the TUI, and imported images stop being dead links (issue #203).**
+  Uploading or importing a file already copied it into `assets/<hash>.<ext>`, but nothing rendered it — every asset, images included, landed as a plain `[name](assets/…)` link, so an imported graph showed clickable text where you expected to _see_ the picture.
+  `![alt](url)` is now a first-class inline token (`InlineTok::Image` / owned `InlineToken::Image { alt, href }`), parsed by `try_image` right after the embed matcher so the leading `!` is never stranded before the bare-`[` link — one parser in `outl-md`, consumed by every client (no parallel TS/Swift tokenizer).
+  **Desktop and mobile** render an image inline through the shared `<MarkdownInline />`: a local `assets/…` asset loads its bytes through a new `read_asset_data_url` backend command (resolved with the existing traversal-safe `resolve_asset_path`, capped at 25 MB, returned as a `data:` URL — no Tauri asset-protocol config, identical on both clients), and a remote `http(s)` image loads directly.
+  A non-image `![…]` (e.g. `![notes](assets/x.pdf)`) degrades to a clickable file chip (`📄 name`) that opens in the OS app, so nothing is ever left unrendered.
+  **The TUI** paints a `🖼 alt` / `📄 name` placeholder (a terminal can't show pixels), keeping the raw `![alt](url)` verbatim in edit mode so cursor alignment stays exact.
+  **The importers** (`roam` / `logseq` / `obsidian`) now emit the embed form `![…]` for image assets and keep the plain link for everything else, so a migrated graph's images render on first open.
+  Client-side image-vs-file classification reuses `wikilink::is_image_target` / the mirrored `assetKind` helper — no second extension list.
+
+- **`==highlight==` is now a native inline token, so Roam's `^^highlight^^` renders as a highlight everywhere instead of vanishing.**
+  The importer already rewrote `^^…^^` to `==…==` on disk, but nothing rendered `==…==` — the marker just sat there as literal text.
+  `outl_md::tokenize` now emits an `InlineTok::Highlight`, the shared `<MarkdownInline />` renderer wraps it in `<mark>`, and the TUI paints it with a yellow background.
+  Pasting Roam content converts `^^…^^` to `==…==` too (previously it was stripped), trimming any space next to the markers so the result renders.
+  The matcher rejects a space next to either marker, so a spaced comparison (`a == b`) stays plain text — unlike `~~strike~~`.
+
+### Changed
+
+- **The snapshot boot cache is encoded with `postcard` instead of `bincode`, so `outl-core` can be embedded in a project with a dependency-policy gate (issue #207).**
+  `outl-core` is on crates.io specifically so other projects can [embed outl](docs/embedding.md) as a storage layer.
+  That story was blocked in practice: a maintainer auditing a PR that embedded outl rejected it because the graph failed their policy gate.
+  The cause is [RUSTSEC-2025-0141](https://rustsec.org/advisories/RUSTSEC-2025-0141) — the bincode team ceased development permanently, and the advisory carries `patched = []`, meaning **every** version is flagged, 1.x and 2.x alike (the 3.0.0 "release" is a tombstone whose entire `lib.rs` is a `compile_error!`).
+  So moving from bincode 1 to bincode 2 would have changed the version number and left every downstream `cargo deny` / `cargo audit` failing exactly as before.
+  postcard is serde-native, actively maintained, `MIT OR Apache-2.0`, and its varint encoding is smaller on the wire — which also helps the peer snapshot transfer over iroh.
+  **Nothing about this can lose data.**
+  A snapshot has never been source of truth; the op log is.
+  `SCHEMA_VERSION` goes `3` → `4`, an old snapshot fails `decode`, and that lands on the same path a corrupt snapshot always took: full op-log replay, nothing surfaced to the user.
+  The cost is one slower boot per device, once.
+  Cross-version pairing degrades the same way — a peer still on the old build ships a snapshot this build skips while it keeps scanning for a readable one, so it replays instead of erroring.
+  The regression tests decode a **real** schema-3 snapshot captured from the old encoder rather than a synthetic corruption, on both the local-boot and the peer-adoption path.
+  `bincode` is gone from `outl-core`'s dependency graph, direct and transitive. One flagged crate remains across the whole embedding contract, `smallstr` (see the entry below), so a gate that fails on `unmaintained` is not clean yet.
+  Note the workspace `Cargo.lock` still resolves bincode 1.3.3 through `steel-core`, the Lisp runtime behind `outl-exec`'s default features — that's a separate graph an embedder only opts into by taking `outl-exec`.
+
+- **Swept the rest of the published crates for the same class of problem, and cleared every advisory that a version bump could clear.**
+  #207 was one symptom; the audit was the point.
+  `wasmtime` 46.0.1 → **47.0.3** closes two real vulnerabilities (RUSTSEC-2026-0222 / -0223 — cross-engine type-index confusion and VM-state corruption on preempted bulk operations). 46.0.2 was never published, so the fix required the major bump; it needed no code change.
+  `crossbeam-epoch` 0.9.18 → 0.9.20 (RUSTSEC-2026-0204, invalid pointer dereference), `anyhow` 1.0.102 → 1.0.104 (RUSTSEC-2026-0190, unsoundness in `Error::downcast_mut`), `event-listener` 5.4.1 → 5.4.2 (RUSTSEC-2026-0221, `!Send` tags crossing threads).
+  **The embedding contract — `outl-core`, `outl-md`, `outl-actions`, `outl-ws` — now carries exactly one flagged crate between all four**: `smallstr 0.3.1` (unmaintained, no patched release), transitive through `yrs`. `yrs` 0.27.3 still depends on it, so that one needs upstream and is tracked separately.
+  Its licenses are fully permissive.
+  The sweep also clarified something [Embedding](docs/embedding.md) had wrong: **`outl-exec` is not embedding surface.** It sits on crates.io only because `outl-actions` references it and cargo won't publish a crate whose dependencies aren't in the registry. Running code fences is an app concern, not a storage-layer one, which is why the workspace has always pinned it at `default-features = false` — and why the LGPL-3.0 / MPL-2.0 crates its language runtimes pull in never reach an embedder. The doc now says so instead of listing it as a fifth option.
+
+### Fixed
+
+- **`outl doctor` no longer claims every `.md` parses cleanly right after listing the ones that don't.**
+  The parse-warning check ran once per directory and printed its all-clear from inside that loop, so a dirty `pages/` followed by a clean `journals/` produced "2 line(s) outside outl dialect" and "every `.md` parses cleanly in the outl dialect" three lines apart.
+  The tally is now accumulated across every scanned directory and the verdict printed once — a workspace-wide claim needs a workspace-wide count.
+  Pre-existing, but the new `remind::` validation makes it far easier to hit.
+
+- **The Roam importer now carries `key:: value` attributes over as real properties instead of dropping them into bullet text.**
+  A Roam page's attribute blocks (`icon::`, `page-type::`, `work::`, `related::`, `oura-date::`, and every `key:: value` a graph accumulates) used to import as plain text bullets — the adapter set `props: Vec::new()` unconditionally, so a contact page's `page-type:: contact` never reached outl's index and the sidebar icon, the `page-type` filter, and the `@` mention autocomplete all came up empty on imported graphs.
+  Blog-post frontmatter (`url::`, `draft::`, `public::`, `status::`, `tags::`) landed as text too.
+  The adapter now lifts attribute lines out of each `:block/string`: the leading run of pure-attribute blocks (only `key:: value` lines) at the head of a page is promoted to page properties in the `.md` header, while a pure-prop block that appears after real content stays in place so promotion never reorders the outline.
+  Structural lines are normalized everywhere: `collapsed:: true` becomes the fold flag (`Op::SetCollapsed`) instead of a literal property, and `id::` (Logseq residue) is dropped and counted as an artifact.
+  A block that still has prose keeps its `key:: value` lines in the text on purpose: outl's own parser lifts trailing continuation properties and resolves any `((uid))` in their values through the placeholder pass, so the block-ref-in-a-property-value shape (Omnivore's `note:: ((uid))`) still degrades correctly instead of being silently bypassed.
+  `parse_prop_line` moved to the shared `adapters/scan.rs` so the Roam and Logseq adapters classify a property line identically.
+
+- **Pairing a device from the CLI (`outl peer pair --ticket`) now joins the host's workspace instead of leaving the two devices unable to sync (issue #197).**
+  A machine that paired via the CLI kept its own freshly-generated workspace identity, so every later sync was refused with `rejecting sync from peer on a different workspace` — the paired devices looked like two unrelated graphs and nothing ever converged.
+  The CLI joiner now **adopts the host's `WorkspaceId`** during the handshake (persist-first: it writes the id to `<workspace>/.outl/workspace-id` before returning), exactly like the desktop/mobile GUI already did, and the host advertises its own id so a CLI host works too.
+  `outl peer pair --ticket` now prints what happened — `Joined the host's workspace (…)`, `Already on the host's workspace`, or a warning if the host is on a build too old to advertise an id.
+  The sync onboarding walkthrough in [`docs/sync.md`](docs/sync.md) was rewritten to hand-hold a new user step by step (which folder to pair from, that the joiner adopts the host's workspace, how to pull the notes) and gained a Troubleshooting section for the `workspace-mismatch` message.
+
+- **The desktop app now resolves `((blk))` block refs and expands `!((blk))` embeds instead of rendering the raw handle (issue #147).**
+  An inline `((blk-XXXXXX))` used to show its literal handle on the desktop; it now renders the source block's text (Roam-style), and a `!((blk-XXXXXX))` embed expands the source block as `↳ text` plus its full subtree — nested and read-only — matching what the TUI already did.
+  The rendering lives in the shared frontend so mobile can adopt it without a parallel implementation: `<MarkdownInline />` resolves the `blockref` token against an `embeds` map (orphan handle = raw chip), and a new `<EmbeddedSubtree />` component in `@outl/shared` renders the embed's subtree depth-capped at 4, mirroring the TUI's `emit_embedded_children`.
+  The desktop only wires the loop — `OutlineView` collects every ref + embed handle on the page with `collectBlockRefHandles` and resolves them in one round-trip through the `resolve_embeds` backend command, which was extended to carry each source block's subtree (`EmbedContent.children`, projected with tokens via the new `outl_actions::project_parsed_subtree`).
+  The resolution logic itself is shared (`@outl/shared` + `outl-tauri-shared`), so the client holds no client-owned ref/embed rendering path.
+
+- **TUI: opening a page from the quick switcher (`Ctrl+P`) no longer lands on an empty duplicate when the page's on-disk slug contains slug-unsafe characters (issue #195).**
+  The switcher's preview resolved the page by its literal `pages/*.md` file stem, but Enter round-tripped that same stem through `slugify()` before opening — for a slug that isn't slugify-idempotent (`~`, `%`, uppercase; e.g. slugs written verbatim by the MCP's `page create`), the re-slugified path missed the real file and the "not found" branch silently created a fresh empty page (`title::` plus one empty bullet) next to the real one.
+  Enter now opens the candidate's literal on-disk slug, the same identifier the preview already used; opening by a user-visible name (following a `[[ref]]`, `/open`) still slugifies as before.
+
+- **Re-rendering a page from the op log no longer deletes its block-level `key:: value` property lines from the `.md`.**
+  `reconcile` correctly turned block properties into `Op::SetProp` on the block node, but the reverse projection (`render_page_md` / `render_block_md` via `build_outline`) never wrote them back — so any mutation that re-rendered the page (a GUI edit, the importer's ref-resolution pass) silently dropped every `priority:: high`-style line from disk, and the next external-edit reconcile would emit property-removal ops: convergent data loss.
+  Block properties now project back alpha-sorted, matching the page-property behavior, and the importer's end-to-end suite pins the round trip.
+
+- **Pressing Enter in the middle of a block now splits it instead of leaving the text untouched and opening an empty block below (issue #184).**
+  Every client — TUI, desktop, mobile — used to treat Enter as "commit this block, then create an empty sibling below and start typing there," no matter where the cursor sat, so splitting a sentence into two blocks meant a manual cut-and-paste.
+  Enter now behaves the way every other outliner does: the text before the cursor stays in the current block, the text from the cursor onward moves into a brand-new sibling created right below, and the cursor lands at the start of that new block.
+  The two edge cases keep their old, familiar shape — Enter at the end of the text still just opens an empty block below, and Enter at the very start pushes the whole line down and leaves an empty block above it.
+  Children of the split block stay with the head, so indenting is never disturbed.
+  The desktop and mobile apps share one backend operation for this (`outl_actions::split_block`, wired through a new `split_block` Tauri command); the TUI has its own equivalent that slices the in-flight edit buffer before it's ever written back to disk, since the TUI edits an AST that hasn't round-tripped through the workspace yet.
+
+### Added
+
+- **The embedder lib crates now publish to crates.io on every release.**
+  `outl-core`, `outl-md`, `outl-exec`, `outl-actions`, and `outl-ws` — the closure an external tool needs to open and mutate an outl workspace through the op log — are published by CI at the same version the binaries report, beta and GA alike.
+  Embedding outl no longer requires a git checkout side by side: a plain `outl-core = "0.8"` requirement resolves GA versions, and a `"0.8.0-beta"`-style requirement rides the betas cut from `main`.
+  Every other crate in the workspace is explicitly `publish = false`.
+
+- **`outl import roam` now preserves block refs, embeds, and folded state — powered by a new adapter-based import pipeline (`outl-import` crate).**
+  The old importer flattened every `((uid))` block ref into a whole-page link and mangled `{{embed}}`s into leftover syntax; for a graph that leans on refs and embeds, that was silent data degradation at migration time.
+  The new pipeline parses the source into a typed IR, writes markdown with inert placeholders, reconciles to mint sidecar handles, and then resolves every source UID into a real `((blk-XXXXXX))` reference / `!((blk-XXXXXX))` embed — through the op log, so block identities never shift under the rewrite.
+  Roam dialect now translates properly on the way in: `__italic__` → `*italic*`, `^^highlight^^` → `==highlight==`, `#[[Multi Word]]` → `[[Multi Word]]`, `{{[[TODO]]}}`/`{{[[DONE]]}}` → outl task prefixes, org-style `DEADLINE:/SCHEDULED: <date>` stamps → `[[YYYY-MM-DD]]` links (the issue #63 model), and flat `{{[[query]]: {and: …}}}` queries become live ` ```query ` fences.
+  Roam's folded blocks (`open: false`) survive as `Op::SetCollapsed`, components with no outl equivalent (`{{table}}`, `$$latex$$`, …) are preserved verbatim and counted, and slug collisions are disambiguated instead of silently overwriting.
+  Three new flags: `--dry-run` (parse + report, write nothing — measure fidelity against a real backup before migrating), `--json` (full machine-readable report), and `--preserve-timestamps` (keep Roam create/edit times as `created::`/`edited::` properties).
+  A large import (a 4.5k-page graph reconciles for several minutes) now paints a live progress line on stderr — phase, page counter, percentage bar, current page, elapsed — instead of sitting silent; it only renders on a TTY, so piped and CI runs stay clean.
+  Anything unresolvable stays greppable (`((unresolved:uid))`) and every degradation is counted in the import report — silent loss is treated as a bug.
+  **Logseq and Obsidian moved to the same adapter pipeline** (the legacy string pipeline is deleted), so every source accepts the same flags and produces the same rich report.
+  The Logseq adapter now truly parses the outline: `id::` UIDs become real block-ref handles instead of page-link fallbacks, `collapsed:: true` survives as folded state, `DOING`/`NOW`/`LATER`/`WAITING`/`CANCELED` map to `TODO`/`DONE` with a `state::` property preserving the nuance, `[#A]` priorities become `priority::` properties, `SCHEDULED:`/`DEADLINE:` timestamps become `[[date]]` links, `:LOGBOOK:` drawers are dropped and counted, and `#+` directives plus leading `key:: value` lines become page properties.
+  The Obsidian adapter keeps its full behavior (frontmatter policy, wiki-link collapsing, image-embed conversion, H1/title resolution, path-derived slug-collision suffixes, `path::` folder hints) on the new engine.
+  `outl import auto <src> <dst>` detects the source from its shape (JSON file = Roam, graph dir = Logseq, `.obsidian/` vault = Obsidian).
+
+- **The TUI's `g x` now opens the markdown link under the cursor when the block isn't code (issue #183).**
+  Links `[text](url)` already rendered in the TUI (blue, underlined) but there was no way to follow one — the desktop and mobile apps let you click, the terminal had nothing.
+  `g x` keeps running fenced code blocks exactly as before (code always wins), and only when the current block isn't code does it look for a markdown link under the cursor and open it in your system browser.
+  The cursor can sit on the link's text or its URL — both open the same link, matching vim's `gx` on `.md` files.
+  Only `http` / `https` / `mailto` links are opened; anything else is refused, the same guard the desktop uses.
+  Following a `[[page]]` / `#tag` / `((block ref))` is still `Enter`, unchanged.
+
+- **The pairing screen now shows live sync progress instead of a frozen "Loading…".**
+  Pairing a device to a large workspace transfers a ~15 MB snapshot plus a couple hundred thousand ops, which takes the better part of a minute — and until now the screen gave no sign anything was happening.
+  The Sync section (desktop) and the Devices sheet (mobile) now show, as a pass runs: a **real progress bar** for the snapshot download (the only phase with an honest percentage — the total is known from the frame's length prefix before the body arrives), a **live count** of ops received / sent (op totals are only known once a batch finishes, so they surface as a number, not a bar), and an **activity feed** of "device → what synced".
+  For an incremental live sync the feed names the pages that changed (`MacBook Pro → journals/2026-07-18`); on the initial bulk pair it stays a count, since naming tens of thousands of pages is meaningless.
+  Under the hood this is a second, purely-cosmetic channel out of the iroh transport (`outl_actions::SyncProgress` over the `sync-progress` Tauri event) — entirely separate from the load-bearing reload signal, so a dropped progress update can never affect what actually syncs.
+  The feed's page names come from a new `resolve_page_labels` command that resolves the touched block ids to their page/journal slug; the engine caps how many it ships, so it stays cheap.
+
+### Performance
+
+- **A composite write — creating a page with content, pasting a subtree, running `outl batch`, importing a page — is now a single-digit-millisecond operation instead of tens to ~90ms (issue #192).**
+  Every `Workspace::apply` used to end in its own `Storage::append_op`, and on macOS that call ends in `F_FULLFSYNC`, which costs roughly 4ms regardless of how little data moved.
+  A "create a page" action that appended a root, a 7-block forest, and three properties fired eleven of those fsyncs back to back — the fsync, not the CRDT or the disk write, was the bottleneck.
+  `Storage` grows `append_ops(&[LogOp])`: the default still loops `append_op`, but `JsonlStorage` overrides it to validate the whole batch, serialize every line, then open once, heal a torn tail once, write every line, and fsync **once** for the batch.
+  `Workspace::begin_batch()` is the apply-side half — a new RAII guard (`WorkspaceBatch`) that every composite `outl-actions` function (`append_forest`/`append_tree`, page create, paste, template instantiate, block split) now opens around its multi-op body: each op still runs the full CRDT path one at a time, only the persist is deferred to one `append_ops` call per storage destination on commit.
+  `outl batch` and `outl-md`'s external-edit reconcile (the largest single burst of ops in the system — a fresh import or boot re-diffs every block of every page) batch the same way.
+  A dropped or errored batch still flushes whatever was applied before the failure, so `applied`/`failed_at` in `outl batch`'s response describe the exact same on-disk state the pre-batch per-op path did.
+
+- **The TUI opens instantly and `Esc`/commit is snappy again on a large workspace.**
+  On a ~2800-page vault, opening the journal and leaving edit mode stalled for over a second each.
+  Two separate costs were behind it.
+  First, **every commit rewrote the whole page's op log**: the diff defensively re-emitted `Create` + `Move` for every block and allocated fresh fractional positions each time, so every `Move` looked like a real reorder — an 11-block page fsynced 23 ops per keystroke-commit (slow `Esc`) and the log grew by the whole page every edit (slow boot).
+  The diff now reuses each block's current position when its order is unchanged and filters ops that are already no-ops against the tree, so a one-block edit emits **one** op instead of 23 (measured 114 ms → 8.6 ms).
+  Second, the **backlink index was built inline on the event loop** — reading all 2800 `.md` files (~1.75 s) on the first render and again on every whole-workspace change, which is what froze the open.
+  It now builds on a worker thread (mirroring the existing workspace-index rebuild): the journal paints immediately and the "Linked from" panel fills in a beat later; a local edit patches just the current page's entries, and only whole-workspace changes (peer sync, plugins, page delete, cross-page edits) re-spawn the background build.
+
+- **Desktop and mobile writes are now async — a commit never blocks the next keystroke.**
+  Leaving edit mode used to render the page, SHA-256 the sidecar, and write both to disk synchronously on the IPC thread before the reply came back (tens of ms in release, hundreds in debug), and it fired the plugins' `onOp` sweep with an `await` on top.
+  Now the commit only mutates the op log (the source of truth) and builds the reply view straight from the tree; the `.md` + sidecar projection is queued to a single background writer (`ProjectionWriter`), and the plugin sweep is fire-and-forget.
+  The writer serializes and coalesces projections under the workspace lock, so the `.md`↔sidecar pair can never tear (no sync corruption), and a lagging projection is never data loss (the op log is truth; the next boot re-projects, and peers sync ops over iroh, not the `.md`).
+  This brings the two GUI clients to the same async-on-write default the TUI has.
+
+- **The TUI commit is now coalesced, so a burst of edits never blocks input.**
+  Leaving edit mode used to persist synchronously — render `.md` + reconcile + fsync, tens of milliseconds — before the next keystroke could land, so typing `Esc o … Esc o …` stuttered.
+  Now a commit boundary only marks the page dirty and repaints; the actual `render → write → reconcile_md → fsync` drains the instant the event loop goes idle (no keystroke waiting), so edits in a burst coalesce into one persist when the user pauses.
+  A hard cap (600 ms) forces a flush even mid-burst so an unsaved edit can't linger, and every path that reads persisted state (navigation, peer reload, quit, `Ctrl+S`, `call:` re-run, code-block exec) flushes first — so nothing ever reads a stale `.md` or op log, and a quit never drops the last edit.
+
+- **Opening today's journal is instant again on the desktop and mobile apps, even on a large workspace.**
+  A ~66k-block / 211k-op workspace took seconds to paint the journal on first open (desktop noticeably, mobile much worse); the TUI stayed fast.
+  The TUI was the clue: all three clients share the same op-log boot + snapshot, so the boot itself was fine — the GUI clients were paying for something the TUI does lazily.
+  That something was **backlinks**: `build_page_view` (in the shared Tauri backend) computed `backlinks_for_page` synchronously — an `O(blocks-in-workspace)` scan — inside every page-open **and** every block-mutation reply, so the whole journal waited on a full-workspace walk before it could paint.
+  The TUI has always computed backlinks lazily (cached, only when the panel is visible); the GUI now matches it.
+  `PageView` no longer carries backlinks (the field stays in the wire shape but comes back empty); a new `page_backlinks(slug)` command computes them off the first-paint path, and each client fetches them after the outline renders (desktop via a slug-keyed effect, mobile via a `createResource`), so the panel fills in a beat later without ever blocking the journal.
+  Mobile additionally moved its boot-time orphan-`.md` reconcile (a filesystem walk of every page) onto a background thread, the way the desktop already did, so it's off the cold-boot critical path too.
+
+### Fixed
+
+- **Opening a page with many backlinks is much faster (issue #169).**
+  A user with a template referenced from 760 places reported multi-second page opens.
+  The cause was `backlinks_for_page` being **quadratic**: it walks every block in the workspace and, per match, materializes the block's subtree — and both steps went through `children_of`, which rescans _every_ node in the tree on each call (`Tree` stores only `node -> (parent, position)`, with no child index).
+  The walk now builds a `parent -> children` map once per call (one scan + per-parent sort; `O(n log n)` worst case) and threads it through the walk and subtree projection, eliminating the `O(n²)` rescans.
+  This still does a full workspace walk (no inverted index), but the report's shape — 760 backlinks in a ~35k-block workspace — drops from **3.83 s to 41 ms** (~94×), with **no change to results** (the full backlinks test suite is the correctness oracle).
+  This is a pure internal refactor: `backlinks_for_page` / `project_outline` / `project_outline_node` keep their signatures and output; the index is scratch state rebuilt per call, never cached, so it can't go stale.
+
+- **Snapshot fast-boot now actually works in production, and can no longer drop a synced edit (issues #156, #128, #109).**
+  The materialized-state snapshot that short-circuits full op-log replay on open was **inert in production**: the workspace wrote it to `<root>/.outl/snapshots` while the storage backend read it from `<root>/snapshots` (it derived the path from `ops_dir.parent()`, but production keeps the op log at `<root>/ops`, not `<root>/.outl/ops`).
+  Writer and reader never met, so every boot silently fell back to a full replay — every existing test passed only because tests use `<root>/.outl/ops`, which makes the two paths coincide.
+  Snapshot I/O is now owned entirely by `Workspace` (read/write straight to `<root>/.outl/snapshots`, keyed off the workspace `root`) and was removed from the `Storage` trait, so there is a single path derivation and the two-owners divergence can't recur.
+  Naïvely fixing only the path would have armed a **silent data-loss bug**: the replay cutoff was a single global HLC, so a legitimately-low-HLC op from a lagging or offline peer, delivered after the snapshot, sat below the cutoff and vanished from the tree even though it was durably in storage.
+  The cutoff is now a **per-actor vector clock** — boot replays, for each actor, every op above that actor's own high-water mark plus every op of an actor the snapshot never saw — so no concurrent write is ever dropped (snapshot boot stays observationally identical to a full replay, guarded by the convergence property suite).
+  The long-lived clients (TUI, desktop, mobile) now enable the snapshot policy from `outl.toml` on open and flush a final snapshot on graceful shutdown, so the CLI's next invocation boots from it instead of replaying the entire op log (#109).
+
+### Changed
+
+- **`crates/outl-core/src/storage/jsonl.rs` split into cohesive modules (issue #161).**
+  The op-log backend (1189 lines, past the file-size guard's hard limit) is now `storage/jsonl/{mod,read,append,tests}.rs`, each comfortably under 600 lines, with no logic or public-surface change.
+
+## [0.8.0] — 2026-07-11
+
+### Added
+
+- **Multi-block batch operations, on the TUI and desktop (issue #23).**
+  The TUI's Visual mode (`V`) gains **reorder**: `Alt+↑` / `Alt+↓` drag the whole selection among its siblings (mirror of the single-block `Alt`+arrows in Normal), alongside the existing range delete / indent / outdent / yank.
+  On the desktop, multi-select no longer requires vim mode: **`Shift+↓` / `Shift+↑`** start and grow a contiguous block selection from anywhere (the non-vim entry), and a floating **batch toolbar** appears — `N selected` plus Indent, Outdent, Move up, Move down, Delete, and Done — so the range ops are reachable by mouse instead of only by chord.
+  The toolbar fires the **same** `action-handlers` the keyboard does, so button and chord can't drift; only the toolbar's Delete confirms before erasing a range with nested children (the keyboard delete and the TUI erase without a prompt, matching vim).
+  The range reorder (`Cmd/Ctrl+Shift+↑/↓` in Visual) loops the existing per-block move action, walking bottom-up for move-down so a block never drags over its own not-yet-moved neighbour; the selection follows because block ids are stable across the re-render.
+  All four new bindings live in the shared `outl-shortcuts` catalog (`SelectRange{Down,Up}`, `MoveVisualRange{Up,Down}`), so a future client inherits them.
+- **Template engine — reusable block structures and callable code blocks (issue #146).**
+  Any page becomes a template the moment it gets a `template:: <name>` property; the page's outline is the template body, so templates are searchable, have backlinks, and sync like any other page — no special folder, no file-based config.
+  Two invocation modes.
+  **Structural** (`/template <name>` in the TUI, `outl template apply <name> --page <slug>` on the CLI, `outl_template_apply` over MCP) deep-copies the template's subtree under the target block, minting fresh `NodeId`s and op-log entries, and substitutes the built-in variables `{{date}}`, `{{today}}`, `{{yesterday}}`, `{{tomorrow}}`, `{{page}}`, and `{{time}}` in the block text.
+  **Callable** (a ` ```call:<name> ` fence, run with `gx` in the TUI or the Run action on desktop) resolves the named template's code block, injects the `params::` declared on the call block, and executes it through the existing `outl-exec` runtimes — Roam's `{{roam/render}}` without a ClojureScript runtime.
+  Callable execution lives once in `outl_actions::run_callable_block` and is intercepted inside the shared `run_code_block` action, so the desktop and mobile Run paths get `call:` fences for free instead of erroring "no runtime for `call:<name>`".
+  On the GUI clients a `call:<name>` fence now renders as a proper code block (with a language chip and Run button) — the shared `detectFence` info-string pattern accepts the `:` so the block is no longer left as raw ` ``` ` text, and its `key: value` params are syntax-highlighted (as YAML) instead of rendering flat.
+  Finishing an edit on a `call:<name>` block re-runs it automatically, so the `> **result:**` reflects the freshly-typed params without a manual `gx` / Run — on the TUI (Insert commit) and both GUI clients (the shared `edit_block` command).
+  **Every template page shows where it was used.** The template page's backlinks panel now lists every block that rendered it (a `call:<name>` fence) or instantiated it (`from-template:: <slug>`), so you jump from a template to its call sites with no hand-written `[[link]]` — the matcher reads the fence and the provenance property directly, not just plain `[[refs]]`.
+  **The daily journal is now a template too.** `outl init` creates a `templates/journal` page (`template:: journal`) instead of a `templates/journal.md` file, and opening a fresh daily note stamps that template automatically — the built-in variables resolve against the daily's date. Existing customized `templates/journal.md` bodies migrate into the page on `init` (best-effort).
+  Callable params are injected as JSON (`serde_json`), so a value containing a quote can't break — or inject into — the generated program, and the language is canonicalized so `py`/`python3`/`node` aliases still receive the params prelude. Built-in date/time tokens resolve through the workspace clock (honouring `[calendar] timezone`), matching the journal date instead of reading UTC in containers.
+  The engine lives once in `outl_actions::template` and every client wraps it (TUI, CLI, MCP), so the semantics stay identical across surfaces.
+- **Paste with formatting now brings rich clipboard formatting across (bold, italic, links, lists) on the GUI clients.**
+  Copying a formatted message — a Slack post, a Google Doc paragraph, a Notion block, a Gmail draft — puts the bold/italic/links/lists on the clipboard's `text/html` flavour; the `text/plain` flavour is stripped of them.
+  The desktop and mobile paste used to read only `text/plain`, so a pasted Slack message arrived flat.
+  It now reads `text/html` first and converts it to outl markdown (via **Turndown**, tuned for the outl dialect: `*italic*` not `_italic_`, `-` bullets, `~~strike~~`, and Slack `:emoji:` kept from the image alt text), then routes it through the same paste pipeline — so the formatting and the bullet structure survive.
+  Google Docs (and other editors that encode weight as inline CSS) are handled too: a `font-weight:700` span becomes `**bold**`, and the `<b style="font-weight:normal">` wrapper Docs wraps the whole payload in no longer bolds the entire block.
+  Plain text with no richer HTML behaves exactly as before.
+  The converter lives once in `@outl/shared/paste` (`htmlToOutlMarkdown`) so both GUI clients stay identical.
+- **Paste with / without formatting, with explicit chords per client.**
+  "With formatting" routes the clipboard through the conversion pipeline: outline syntax (Roam `{{[[TODO]]}}`, GitHub `- [ ]`, Logseq) is normalized to the outl dialect, and **plain multi-paragraph text is split into one block per paragraph** — a pasted chat reply or email lands as a readable outline instead of one wall-of-text block (blank line = paragraph break; soft line wraps stay in one block).
+  "Without formatting" splices the raw clipboard text into the current block, no conversion, no splitting.
+  Desktop: `Cmd/Ctrl+V` = with formatting, `Cmd/Ctrl+Shift+V` = without.
+  TUI: `p` = with formatting, `Shift+P` = without (both read the OS clipboard now; the old `p`/`P` yank-register paste is folded into this since copy mirrors the register to the clipboard).
+  Mobile: paste is always with formatting.
+- **Copy a block selection as clean markdown to the OS clipboard, in every client (issue #114).**
+  Copying out of outl used to be a mess — selecting a block in the TUI with the terminal's mouse copied the on-screen tree guides (`│`), bullets, and fold markers, so pasting elsewhere produced garbage.
+  Now every yank/copy writes the **canonical outl markdown** for the selection (each block plus its subtree) to the clipboard, so it re-pastes into outl as the same tree and reads as a tidy bullet list anywhere else.
+  TUI: `yy` / `Y` / Visual `y` write the markdown to the clipboard via `arboard` **and** an OSC 52 escape, so it reaches the clipboard over SSH, inside tmux, and in Chrome OS **Crostini** where `arboard` has no display server (the in-app yank register that `p`/`P` reads is still filled too).
+  Desktop: `Y` / Visual `y` copy the selection as markdown via `navigator.clipboard`.
+  Mobile: the long-press **Copy** action copies the block and its subtree as markdown instead of a single block's raw text.
+  A Visual range spanning a parent and one of its children no longer duplicates the child — the shared serializer drops any block whose ancestor is also selected.
+  This is the copy-out inverse of the existing paste-in conversion, so the two round-trip; the serializer lives once in `outl_actions::copy_markdown` and every client wraps it.
+- **Opt-in mouse support in the TUI — new `[tui] mouse_capture` config key.**
+  Set `[tui] mouse_capture = true` in `~/.config/outl/config.toml` and the TUI captures the mouse: the scroll wheel moves the selection, a click selects the block under the pointer, and a drag selects a range that is copied to the clipboard as markdown on release.
+  Default `false`, and deliberately so — capturing the mouse disables the terminal's own text selection (selecting a URL, copying a single word), which is muscle memory for many terminal users.
+  The keyboard yank copies markdown to the clipboard regardless of this flag.
+
+### Changed
+
+- **P2P sync now defaults to outl's dedicated relay (`use1-1.relay.avelino.outl.iroh.link`) instead of the shared n0 public pool.**
+  The relay only ever sees end-to-end-encrypted bytes (never your notes), but it _can_ observe coordination metadata — which two devices sync, and when.
+  Defaulting to a dedicated, outl-scoped relay endpoint (hosted on n0 infra under our `*.iroh.link` namespace) is the first step toward a fully outl-owned relay; n0's shared relays remain the documented fallback (a malformed `[sync] relay_url` degrades to them rather than failing the bind).
+  No action needed — a device with an empty / omitted `[sync] relay_url` picks it up automatically. Point `relay_url` at any `iroh-relay` to override. See `docs/relay.md` (the vanity `relay.outl.app` name is on the roadmap, pending TLS).
+
+### Fixed
+
+- **Template footguns from the issue #146 release audit.**
+  Three sharp edges in the template engine (issue #146) are fixed.
+  **Callable vs structural dispatch now keys off the presence of a runnable code block**, not on whether `params::` is declared — a callable template with a code block but no `params::` used to be misrouted as structural, so its ` ```lang…``` ` fence got deep-copied as literal text instead of executing; it now runs (with an empty `params`).
+  **Duplicate template names are visible** — when two pages share a `template:: <name>`, resolution still picks the first in tree order but now logs a `tracing::warn!`, and `list_templates` flags the collision on each `TemplateEntry` (`duplicate`) so a client can surface it.
+  **Plugin-instantiated templates honour the target page's date** — the host derived `{{date}}` from _today_ even on a journal page (`page_date: None`); it now derives it from the target slug, matching the CLI/TUI path.
+- **P2P sync no longer reports a false "sync ok" that silently drops a device's edits.**
+  A desktop-initiated delta-sync logged `catch-up: sync ok` as soon as it finished _writing_ its push — never confirming the peer durably _ingested_ it.
+  Over a lossy desktop → mobile path (a backgrounded iPhone / carrier NAT), the connection could tear down cleanly for the initiator while the mobile never persisted the pushed ops, so a page edited on the desktop stayed empty on the phone even though sync claimed success.
+  The responder already closes the stream with a `done` sentinel **only after** a durable ingest; the initiator now **requires** that sentinel before reporting success (a lost close on an otherwise-successful ingest just costs a harmless, deduped re-push).
+  Regression: `initiator_reports_failure_when_responder_never_confirms_ingest`.
+- **Sync connect no longer stalls ~30s on a stale peer address, and self-heals when a device moves networks.**
+  iroh 1.0.0's QUIC multipath opens a path to every stored address at once and wedges ~30s on a dead one; a peer's old on-LAN IP (still in `peers.json` after it moved Wi-Fi / went cellular) passed the subnet filter and stalled every catch-up tick.
+  Each connect attempt is now bounded by a timeout, and a stalled/failed direct dial falls back to a **bare-node-id** dial so iroh's relay + discovery resolves the peer's _current_ address instead of retrying the dead one forever.
+  On top of that, when a peer dials _in_ directly, outl reads the live socket off the connection and rewrites the stored address to it (dropping the stale one), so the next outbound dial uses the fresh route with no re-pair — the stored address self-heals the moment the peer reconnects.
+- **Mobile stops flip-flopping a page between two devices' states on the sync poll.**
+  The mobile's routine reload (every ~3s) ran the orphan-`.md` reconcile + desync-recovery **inline** — operations that _mutate_ the op log (md → ops). On a page being edited on two devices while sync ingested peer ops, the desync-recovery false-positived on the racing read and minted fresh ops each poll, so the page oscillated between the desktop's and the phone's versions (and briefly flashed an empty "0 ops" state).
+  Reconcile/recovery is a **boot** concern (a stable moment, no concurrent ingest); iroh peers ship _ops_, not `.md`, so a routine reload only needs to re-materialize the op log. The reload is now a pure re-read — orphan `.md` recovery still runs once at boot — and the reload no longer clobbers real content with a transient empty read.
+- **Callable-template results stop churning the op log and oscillating across devices.**
+  The `> **result:**` subtree was deleted and recreated on every run with fresh node ids, so two devices running the same `call:` block fought a delete/recreate war (each deleting the other's result), bloating the op log into the thousands and flip-flopping the page between the two devices' outputs.
+  The result now uses a **deterministic node id derived from the call block** and updates in place, so re-runs are idempotent and two devices converge on one result (last write wins per line) instead of competing subtrees.
+
+- **iroh sync survives restrictive networks — custom-CA proxies and post-VPN stale peer addrs (issue #133).**
+  Two blockers that stopped Mac ↔ iOS sync on corporate / VPN networks are fixed in code.
+  **Relay TLS with a custom root CA:** a network with a TLS-inspection proxy (its root CA installed in the OS keychain) had every relay handshake rejected with `invalid peer certificate: UnknownIssuer`, because iroh trusted only Mozilla's bundled roots — not the OS trust store that macOS / `curl` / Safari already honour.
+  outl now delegates relay-TLS validation to the OS keychain (iroh's `platform-verifier` + `CaTlsConfig::system()`, wired once in `bind::n0_builder_ipv4_only`), so a keychain-trusted proxy cert is accepted.
+  **Stale VPN/tunnel IPs after pairing:** a device paired while on a VPN captured its tunnel IPs (`10.x`, `100.x` CGNAT, a public WAN addr) into `peers.json` alongside the real LAN address, and iroh 1.0.0's multipath opened a path to each — stalling even same-WiFi direct sync on the dead paths (`MultipathNotNegotiated`) with the reachable `192.168.x` addr right there.
+  A dial now keeps only the direct IPv4 addresses that share a subnet with a local interface, dropping unreachable tunnel IPs before they can stall the connect (the relay still covers genuine cross-network peers).
+  A third failure mode — a proxy that blocks the relay's WebSocket `Upgrade` and returns `502` — is environmental (iroh 1.0.0 has no non-WebSocket relay transport); the workaround is a self-hosted `[sync] relay_url`, now documented under `docs/relay.md` → "Troubleshooting: restrictive networks".
+- **Underscores inside a word no longer render as italics.**
+  The inline tokenizer paired any `_…_` as emphasis, so pasted identifiers like `chamados_chat`, `inc_lag1`, `prod.ml_atendimento`, or `databricks_2_train` rendered half-slanted.
+  outl now follows CommonMark: `_` only opens or closes emphasis at a word boundary, never intra-word (`*` stays the intra-word marker).
+  A standalone `_italic_` still works.
+- **`o` / new-line no longer errors with "block … is not in the tree" after a background reload.**
+  On the desktop, a peer-driven reload (`peer-ops-changed`) replaced the outline without clearing the editing / selection cursor, so a block being edited could keep an id the reload had re-materialized or dropped — the next edit or new block then hit "block … is not in the tree".
+  The reload now prunes a stale `editingBlockId` / `selectedBlockId` against the fresh outline, and `create_block` (desktop + mobile) falls back to appending at the page end if its anchor is gone.
+- **Pasting into a freshly-created empty block no longer errors with "block … is not in the tree".**
+  A block created with `o` (or a new line) carries only an `Op::Create`, no `Op::Edit`, so it has no materialized text yet — and the caret-paste path guarded the host's existence on `block_text`, which returns `None` for a text-less block, so pasting into a brand-new empty block was rejected as if the block didn't exist.
+  The paste (with **and** without formatting) now checks the tree for the block and treats a missing text as empty, so it grafts into the new block on desktop and mobile.
+- **Desktop error messages surface as a top-right toast instead of a hidden bottom banner.**
+  The error surface used to render a full-width banner at the base of the outline, where the fixed bottom-left chrome cluster painted over its left edge — the message was half-covered.
+  Errors now appear as a floating toast in the top-right notification corner, above every chrome element, with nothing overlapping it.
+- **Journal date and status-line clock honour a configured timezone — new `[calendar] timezone` config key.**
+  The journal's "today" and the TUI clock used to call `chrono::Local::now()`, which trusts the operating system's local timezone.
+  In containers and Chrome OS **Crostini** the OS clock runs in UTC regardless of where the user is, so the date landed on the wrong day near midnight and the clock read an hour off (issue #107).
+  A user can now set `[calendar] timezone = "Europe/London"` (any IANA name) in `~/.config/outl/config.toml`; the journal date and clock resolve in that zone, DST-aware.
+  The fix is opt-in: with no timezone configured the clock stays on the OS local timezone, so nothing changes for a normally configured machine.
+  Internally this is the new `outl_actions::clock` module (`init` / `now_local` / `today`, backed by `chrono-tz`); every client calls `clock::init` once at boot and every "today" routes through it (`page::today` delegates), so there is a single source of truth for the user's wall clock.
+
+### Added
+
+- **JavaScript plugin system (`outl-plugins`), shared by every client.**
+  Plugins are bundled JavaScript described by a `plugin.json` manifest; a plugin written once runs on every outl client because it talks to the new `outl-plugins` crate, never to anything client-specific.
+  The engine is **Boa** (pure-Rust, runs on iOS — no JIT, reused from `outl-exec`) behind a `PluginEngine` trait so it can move to QuickJS later only if a measured blocker appears.
+  Execution is **describe → apply**: the JS side reads a pre-computed `ReadModel` and emits `HostIntent`s; the host drains them through `outl-actions` → `Workspace::apply`, so the op log stays the single source of truth and `.md` stays 100% clean.
+  Live capabilities: `op-hook` (`onOp`), `slash-command`, `keybinding`, `config-schema` (read), `toolbar-button`, `ui-render`, and `content-transformer:text` / `:rich`; `sync-transport` is core-ready (convergence tested) but no client polls it on a timer yet.
+  `keybinding` fires a bound chord from the **TUI** (Normal mode, single + two-chord, never overriding a native binding) and the **desktop** (a native binding always wins); `toolbar-button` renders a chrome button on desktop + mobile and surfaces the command in the TUI slash menu; `content-transformer` (`ctx.content.register(lang, fn)`) renders a fenced block as text on every read surface (`:text`, inline in the TUI) or as HTML in a sandboxed iframe on the GUIs (`:rich`).
+  New host namespaces: `ctx.net.fetch` (blocking HTTP gated by `network:<domain>`; a denied domain returns `{ ok: false, error }` rather than throwing), `ctx.storage.{get,set,delete}` (per-plugin local KV gated by `storage:local`, stored at `<workspace>/.outl/plugins/<id>/storage.json`, deliberately outside the op log so it never converges), and `ctx.sync.register({ push, pull })`.
+  A query engine plugs in as a `content-transformer` for the `query` fence — there is no separate `query-provider` capability, and inline `{{query}}` waits on a markdown token the parser defers.
+  A capability the current client can't honor loads partially with a warning (never a crash); every host call is gated against the user-approved permission set (`read-page`/`write-page`/`read-op-log`/`submit-op`/`storage:local`/`network:<domain>`, with bare `network:*` rejected).
+  Anti-loop is structural: `PluginHost` tracks how far into the op log it has dispatched, so a plugin's own ops never re-trigger its hooks.
+  A runaway plugin can't wedge the engine either: Boa runs under `RuntimeLimits` (loop-iteration cap ~20M, recursion cap ~2000, stack cap), so an infinite loop or unbounded recursion surfaces as a JS error instead of a hung thread.
+  Wired into **TUI** (plugin commands in the slash menu, `onOp` after each mutation) and the **CLI** (`outl plugin list / install / run / enable / disable / remove`, the last aliased `uninstall` / `rm`); the desktop/mobile wiring runs the host on a dedicated thread (the Boa context is `!Send`).
+  Distribution day-zero: install from a local directory (`github:` source to follow), a `bundleHash` revalidated on every load, a per-workspace `installed.json` lockfile freezing the approved permissions, and a static `registry.json` index (the "store").
+  Authors get `@outl/plugin-sdk` (typed `definePlugin` + host API) and two working examples: `examples/todo-archiver` (archives DONE blocks to a configurable page) and `examples/confetti` (throws a confetti burst when a block is marked DONE).
+  The `ui-render` capability lets a plugin hand the GUI clients (desktop + mobile) a chunk of author-written HTML/JS via `ctx.ui.render(html)`, which they run in a **sandboxed iframe** (`sandbox="allow-scripts"`, no same-origin — isolated from the app DOM) as an ephemeral full-screen overlay.
+  The host stays agnostic: it only transports the string the plugin produced, so the visual is the author's creativity, not a fixed catalog of effects.
+  The TUI/CLI drop `ui-render` payloads (no webview); the op-hook still fires.
+  New `outl_actions::block::move_under` (re-parent a block under an arbitrary page/block) backs the plugin `Move` intent.
+  See `docs/plugins.md`, `docs/plugin-api.md`, and the manifest schema at `docs/schemas/plugin-v1.json`.
+- **`:shortcode:` emoji syntax + autocomplete across every client.**
+  The outl inline dialect now recognises GitHub-style gemoji shortcodes (`:tada:`, `:rocket:`, `:smile_cat:`, `:+1:`, `:100:`) and renders them as the unicode glyph (🎉, 🚀, 😸, 👍, 💯) on every read surface.
+  The catalog is the [`emojis`](https://crates.io/crates/emojis) crate (Unicode CLDR + GitHub aliases, ~1800 shortcodes) so `outl_md::emoji::search` is the one ranking source TUI, mobile, and desktop share through a single `outl_emoji_search` Tauri command — no parallel index on the JS side.
+  **Disk form is always the shortcode literal** (`:tada:`, never 🎉) so `.md` files stay greppable, diffable, font-independent, and safe across iCloud / Syncthing.
+  The parser only tokenises `:foo:` when the catalog recognises `foo`; unknown runs (`:notarealemoji:`, `meeting at 14:00 :`) stay plain.
+  URL boundaries fall out for free — the strict `[a-z0-9_+-]+` shape + catalog gate reject `https://example.com:8080/api`, `mailto:foo@bar.com`, and `git@github.com:avelino/outl.git` without a look-behind pass.
+  Typing `:roc` inside any block opens a popup with the top eight matches (`outl_md::emoji::search`, exact → prefix → substring, shorter shortcodes win ties); `Tab`/`Enter` commits the canonical `:rocket:` form into the buffer.
+  Wired into `outl-tui` (`AutocompleteKind::Emoji` + the existing overlay machinery), `outl-mobile` (UIKit chip strip via `buildEmojiShowMessage`), and `outl-desktop` (floating `EmojiSuggestPopup` under the textarea, parallel to `RefSuggestPopup`).
+  The shared `@outl/shared/autocomplete::detectEmojiContext` + `applyEmojiSuggestion` own the trigger detection and splice so the three GUI surfaces stay byte-identical.
+  See `docs/markdown-format.md` § "Emoji shortcodes" for the full dialect contract.
+- **`@` mention autocomplete** — typing `@` in any block opens a person picker filtered to pages with the `type:: person` page-level property, fuzzy-matched against the typed name.
+  Accepting a candidate inserts `[[@name]]`, a regular wikilink whose `@` is the link affordance only (page identity stays clean, slug has no `@`).
+  Composite names like `@Thiago Avelino` work because the autocomplete query allows spaces.
+  A "create new" candidate appears when the typed query doesn't match any existing person.
+  Accepting it materialises a fresh `pages/<slug>.md` with `type:: person` already set, so the next mention of the same name surfaces it without manual property editing.
+  Wired identically in `outl-tui`, `outl-desktop`, and `outl-mobile`.
+  The shared `@outl/shared/autocomplete` library owns the trigger detection and the create-new helper for the GUI clients.
+- **`type::` page-level property** — surfaced on `outl_md::WorkspaceIndex::PageEntry.page_type` and `outl_actions::PageMeta.page_type`.
+  New filter `WorkspaceIndex::pages_by_type(t)` and consumer `outl_actions::page::search_persons(ws, query)` rank `type:: person` pages for the `@` mention popup.
+  `type::` is just one of many user-facing page properties (`title::`, `icon::`, `pinned::`, `role::`, anything custom) and all of them now reach the workspace tree (see "Fixed" below).
+- **`ref-projection-failed` Tauri event** — emitted by the desktop and mobile clients when `open_ref` resolved a target (the page is in the op log) but writing the resulting `.md` + sidecar failed.
+  Frontend can listen via `onRefProjectionFailed` (desktop) and surface a toast so the user knows the link they just inserted isn't visible to peers yet.
+  The op log retry on the next save / orphan scan is still automatic.
+
+### Fixed
+
+- **TUI now word-wraps block text to the pane width** ([#99](https://github.com/outlmd/outl/issues/99)).
+  Typing past the right edge of the terminal used to run a block off-screen instead of flowing onto the next visual row — terminals don't reflow on their own, and the outline deliberately avoided ratatui's `Paragraph::wrap` because that expands lines _after_ layout and would desync the `selected_line` scroll index.
+  The outline now pre-wraps itself (`outl-tui` `view::wrap::push_wrapped`): wrapped rows are emitted up front so the scroll index stays honest, the first visual row keeps the bullet/fold marker, continuations re-indent under the text column, and the `│` indent rails repeat top to bottom.
+  Wrapping runs on the already-styled spans (post-tokenization), so a break never splits a `**bold**` / `[[ref]]` token back into its literal markers, and wide glyphs (CJK, emoji) count as two cells.
+  The block being edited (Insert) or selected in Normal mode stays on one line so the cursor column keeps matching the source bytes.
+- **Page-level properties now reach the workspace tree.**
+  The reconcile pipeline previously emitted `Op::SetProp` only for block-nested properties.
+  Anything written at the top of a `.md` (above the first `-` bullet) — `title::`, `icon::`, `pinned::`, `type::`, custom keys — lived only on disk.
+  The workspace CRDT never learned about them, so any consumer reading via `workspace.tree().property(page_id, …)` (desktop sidebar, mobile picker, `outl_actions::search_persons`) silently disagreed with the rendered markdown.
+  The TUI hid the bug because its `WorkspaceIndex`-backed surfaces parse `.md` straight from disk.
+  Cross-client divergence on every workspace populated outside the in-app picker (fixtures, vim users, Logseq/Roam imports, peers via iCloud) was the result.
+  Fix: `outl_md::diff::diff_to_ops_with_page_props` emits `Op::SetProp` on the page root for every page-level property in the parsed AST.
+  `outl_md::reconcile::reconcile_md` calls it on every reconcile pass.
+- **Page root now materialises in the tree.**
+  Pages authored externally never received an `Op::Create`, only the blocks under them did.
+  Combined with the CRDT contract that `Op::Move` on a node without a preceding `Op::Create` is a no-op (an intentional design for peer-sync ordering), this left the page node as a ghost: present as `parent` of its blocks but absent from `children_of(NodeId::root())`.
+  `list_all_pages`, `search_persons`, and the sidebar all skipped externally-authored pages silently.
+  Fix: `outl_md::reconcile::ensure_page_root_in_tree` emits `Op::Create` when the page node is absent from `self.nodes`, or `Op::Move` when it exists at the wrong parent, plus `Op::SetProp` for `page-slug` / `page-kind`.
+  Idempotent: 0 ops emitted on pages that are already materialised.
+- **`open_ref` regenerates `.md` after creating a page.**
+  Both desktop and mobile previously left newly-created pages on the op log only.
+  The `pages/<slug>.md` projection never landed on disk until something else triggered `apply_page_md_with_sidecar` on that page.
+  `WorkspaceIndex` (which parses `.md` from disk) disagreed with the tree CRDT silently, and a peer pulling the workspace via iCloud would never see the page at all.
+  Fix: both clients now call `apply_page_md_with_sidecar` immediately after the `open_or_create_by_ref` mutation; failures emit `ref-projection-failed`.
+- **`open_or_create_by_ref` no longer drops the `@` arm via slug normalisation.**
+  `slugify("@avelino")` strips the `@` and returns `"avelino"`.
+  The generic `find_by_slug(slugify(target))` branch used to run before the `@` arm, so a pre-existing `pages/avelino.md` (created before this feature, or by an external editor without `type:: person`) resolved via the generic path and returned early, never marking the page as a person.
+  Fix: the `@` arm runs first and idempotently sets `type:: person` on every resolution, even when the page already existed.
+- **`reconcile_md` reads the sidecar once.**
+  The short-circuit check used to re-read the sidecar file separately from the diff inputs, racy if another process rewrote the sidecar between the two reads.
+  Fix: single read, both consumers share the result.
+- **Background-thread reconcile after open.**
+  Opening a workspace used to block on a synchronous `reconcile_md` pass across every legacy page.
+  With many pages, the first paint waited tens of seconds.
+  Fix: `outl-desktop::workspace_open::spawn_background_reconcile` runs the orphan reconcile on a separate thread, locks the workspace per page (released between iterations), and emits `workspace-reconciled` on completion.
+  Today's journal opens immediately; legacy pages materialise behind the scenes.
+
+### Migration
+
+- **`pipeline_version` in the sidecar drives forward-compatible re-reconciles.**
+  The first boot on an upgraded binary scans every `pages/<slug>.outl` and re-runs `reconcile_md` on any sidecar whose `pipeline_version` is below the binary's `CURRENT_PIPELINE_VERSION`.
+  Idempotent: the pipeline emits the same `Op::Create` / `Op::SetProp` ops that would have been emitted on first ingestion of the `.md`, the CRDT deduplicates by LWW, and the sidecar persists the bumped version.
+  Two clients opening the same legacy workspace at the same time will each run their own reconcile (each actor owns its `ops-<actor>.jsonl`).
+  The log inflates by roughly 2× the page-root ops once per legacy page per device.
+  Acceptable for a one-shot migration: the CRDT converges deterministically.
+  Subsequent boots skip the page via the `last_synced_hash` + `pipeline_version` short-circuit.
+
+**Desktop client ships.**
+
+`outl-desktop` (Tauri 2 + Solid + Tailwind) lands as the third client alongside `outl-tui` and `outl-mobile`, sharing the same `outl-actions` surface, the same op log, and the same workspace on disk.
+Three new Rust crates (`outl-config`, `outl-theme`, `outl-shortcuts`) extract per-client config + palette + chord catalog out of the TUI so both clients converge on one source of truth; `@outl/shared` (`crates/outl-frontend-shared`) does the same for the Solid + DTO frontend code mobile and desktop both need.
+
+The MINOR bump is the desktop addition; CRDT, sidecar, and existing CLI/TUI/mobile contracts are unchanged.
+
+### Added
+
+- **`outl-desktop`** — Tauri 2 client for macOS, Linux, Windows. 2-pane layout (Sidebar / OutlineView with inline backlinks at the bottom, mirroring the TUI), mini-calendar + pinned + recent in the sidebar, `outl-exec` code-block execution, cross-platform FS watcher (`notify`) that emits `peer-ops-changed` so the frontend reloads when iCloud / Syncthing / shared FS drops a peer's `ops-*.jsonl`. Distributed as a **universal macOS dmg** (arm64 + x86_64 lipo-merged) via `brew install --cask outl-desktop-beta`.
+- **`outl-config`** — shared TOML config at `~/.config/outl/config.toml` (XDG on every OS — Windows routes through `dirs::config_dir()` to `%APPDATA%`). Read by TUI / CLI / desktop through the same `outl_config::load()` so a theme set in the desktop's Settings modal lights up in the TUI on the next launch.
+- **`outl-theme`** — palette catalog with the seven existing presets (`outl`, `default-dark`, `light`, `dracula`, `solarized-dark`, `nord`, `monokai`). TUI derives its `Theme::from_palette` from here; desktop ships the palette over the Tauri wire and writes CSS custom properties.
+- **`outl-shortcuts`** — `(chord → action)` catalog every client consumes. TUI translates `crossterm::KeyEvent` → `Chord`; desktop's `KeyboardEvent` adapter does the same. One binding change lights up on both clients.
+- **`outl-frontend-shared`** (`@outl/shared`) — pure TS+Solid lib with the `MarkdownInline` renderer, paste / autocomplete helpers, DTO types, and the typed `invoke<T>()` wrappers every client uses. Mobile already consumed these locally; promoted in this release.
+- **`PageMeta.pinned`** — the `pinned:: true` page property is now surfaced on `PageMeta` (matching `outl-md::index::PageEntry.pinned` exactly so the two never drift on which literals count as truthy). Sidebars on TUI + desktop pick it up.
+- **Backlinks navigable on desktop** — `j`/`k` extends past the outline's last block into the inline backlinks section; `Enter` opens the source page and parks the cursor on the referencing block. Mouse click does the same. Mirrors what the TUI already did.
+- **Workspace path fallback for `outl` with no args** — `outl_config::load().workspace.last` is consulted between `--workspace <DIR>` and the cwd, so the TUI lands on whatever workspace the desktop opened last with no flag.
+
+### Changed
+
+- **TUI sidebar chord** — `\` → `Ctrl+E` (mirroring desktop's `Cmd+Shift+E`, the VS Code "Show Explorer" convention).
+- **TUI backlinks chord** — `B` → `Ctrl+B` (mirroring desktop's `Cmd+Shift+B`; we kept `Cmd+B` reserved for the universal markdown "bold" chord in Insert mode).
+- **Sidebar + backlinks default to hidden** on the desktop now, matching the TUI's editor-hero defaults. Users opt the panes in with the chord.
+- **Docs** — new `docs/shortcuts.md` (action × client matrix, where each chord lives in the code), `docs/config.md` (full TOML schema + per-OS path), `docs/homebrew.md` covers the desktop cask install + first-launch Gatekeeper workaround for the unsigned dmg.
+
+### Fixed
+
+- **Windows config path** — `outl-config::paths::config_dir()` now branches through `dirs::config_dir()` on Windows so the config lands under `%APPDATA%\outl\` (not `%USERPROFILE%\.config\outl\`, which is not a Windows convention).
+- **`is_truthy` parity** — `outl_actions::page::is_truthy` no longer accepts `"pinned"` as a truthy literal; the set is now identical to `outl_md::index::is_truthy` (`true` / `yes` / `1` / `on`), so a hand-edited `.md` matches what the workspace index would also pick up.
+- **fs_watcher Windows test** — `non_utf8_filename_is_ignored` is gated with `#[cfg(unix)]` (uses `OsStringExt::from_vec`), and `watched_root_label` tests now use `std::env::current_dir()` as a platform-portable absolute path anchor instead of the hardcoded `/tmp/ws` literal (not absolute on Windows).
+- **Desktop outline scroll + narrow-window reflow** — body / `#root` now use `height: 100%` (was `min-height: 100vh`, which let the page grow with content and broke the height chain). `<main>` gained `min-w-0 min-h-0`; the AppShell grid template uses `minmax(0, 1fr)` instead of `1fr`. Same `min-width: auto` pitfall on both flex and grid axes; both unlocks pair.
+
+### CI / Release
+
+- **`desktop.yml`** — split into `check` (Linux, runs Clippy + Rust tests + Vitest + tsc + tauri bundle once) + `build` matrix (macOS arm64 + Windows x86_64 just compile + bundle). macOS x86_64 dropped from the PR matrix because the `macos-13` Intel runner pool is consistently depleted; release-time x86_64 binaries still ship via the universal dmg.
+- **`release.yml`** — adds `build_desktop` (universal macOS dmg on `macos-latest`) and a single anchor in the bump-tap step so `Casks/outl-desktop-beta.rb` rides alongside `Formula/outl-beta.rb` on every push to main.
+
+## [0.5.3] — 2026-06-02
+
+**Unify backlinks, Insert-mode cross-block nav, anti-duplication policy.**
+
+Two parallel backlinks pipelines (one on `outl-md::index`, one on `outl-actions`) had drifted on policy — self-references were dropped on the TUI panel but kept on mobile, and the user had to spot the divergence by comparing surfaces. 0.5.3 collapses them into one path through `outl_actions::backlinks_for_page`, deletes the cache on `outl-md::index`, and renames the related helpers so the call sites land on the shared API by default.
+
+Insert mode also picks up the missing piece for vim/emacs muscle memory: `Up`/`Down` cross blocks (commit, move selection, re-enter Insert preserving the cursor column) the same way `Left`/`Right` already did.
+Multi-line buffers (fenced code) absorb the move internally first.
+
+### Added
+
+- **`outl_core::Tree::properties_of(node)`** — iterator over every property currently set on a node, in one pass.
+  Used by the outline DTO so each `OutlineNode` carries its own properties without scanning the workspace-wide map per block.
+- **`outl_md::view::line_col_to_char(s, line, col)`** — inverse of the existing `char_to_line_col`.
+  Vim-style column clamping (past EOL → end of line) and line clamping (past last → end of string).
+  Lets `outl_tui::EditBuffer::move_up` / `move_down` wrap the same primitives the renderer (`block_to_rows`) already uses.
+- **`outl_tui::EditBuffer::move_up` / `move_down` / `visual_column`** — three thin wrappers over `outl_md::view::char_to_line_col` + `line_col_to_char`.
+  Cross-block Up/Down in Insert calls these first; only spills into the next block when the cursor was already on the buffer's first/last line.
+- **`outl_actions::project_outline_node(workspace, node)`** — build a single `OutlineNode` (subtree + properties) from the workspace.
+  Used by the backlinks builder so each backlink carries its source block as a self-contained outline.
+- **`outl_actions::flatten_subtree_paths(node)`** — DFS-ordered paths inside an `OutlineNode` subtree.
+  Moved here from `outl_md::outline_ops` so any client that consumes `Backlink::source_block` can navigate it.
+- **`outl_actions::OutlineNode.properties`** — `(key, value)` pairs in alphabetical order.
+  Workspace and disk paths both normalise to the same order so backlink panels and outline pages never disagree visually.
+- **`outl_actions::PageMeta.icon`** — page-level `icon::` property surfaced on the meta.
+  Clients pick their own fallback (mobile uses `📄`/`📅` by `kind`; TUI uses `📄`).
+
+### Changed
+
+- **Backlinks now route through `outl_actions::backlinks_for_page` only.** `outl_md::index::Backlink`, `WorkspaceIndex.backlinks()`, `refresh_backlinks_from_source`, `patch_backlink_text`, `flatten_backlink_subtree` were deleted.
+  The `outl-md` index still owns page metadata and the block-level index; only the parallel backlinks cache went away.
+- **`outl_actions::Backlink` is the rich struct.** Now carries `source_block: OutlineNode` (subtree + properties), `source_block_path: Vec<usize>`, `source_path: Option<PathBuf>` alongside `block_id`, `block_text` (TODO/DONE prefix stripped), `todo`, `source_page`.
+  Mobile renders just `block_text` + `todo` today and ignores the rest; the TUI uses the full subtree to render its mini-outline in the backlinks panel.
+- **`outl_actions::backlinks_for_page(workspace, root, meta)` / `backlinks_for_target(workspace, root, target)`** now take the workspace root so each backlink can carry its source `.md` path.
+  CLI passes `&ctx.root`, TUI passes `&self.workspace_root`, mobile passes `storage_root`.
+- **TUI cross-block Up/Down in Insert.** Commits the current buffer, moves the outline selection, re-enters Insert with the cursor on the preserved column.
+  Guard: when `move_selection` would land `Focus` on the backlinks panel, the TUI stops in Normal mode instead of opening a different page mid-Insert.
+  Backlink edits keep the older Esc → j/k → i workflow until cross-page commits get their own pass.
+- **`App::backlinks_for_current` is cached.** Per-frame and per-keystroke render calls hit a `RefCell<Option<(slug, Vec)>>` cache; invalidated on `save`, `save_page_with`, `reload_workspace_from_disk`, and any view switch.
+  Cuts the workspace scan from `O(blocks)` per call to one per slug change.
+- **Self-references are kept in backlinks.** The "skip self-references as noise" heuristic on `outl_md::index` was dropped — a block on today's journal that mentions `[[2026-06-02]]` is exactly the "linked from" pin the user expects to see when revisiting that day.
+
+### Refactored
+
+- **`crates/outl-core/src/tree.rs` (854 lines) → `crates/outl-core/src/tree/{mod, cycle, op, apply}`** — `Tree::creates_cycle` in `cycle.rs`, `Tree::do_op` + `Tree::undo_op` in `op.rs`, `Tree::apply_op` in `apply.rs`.
+  Struct and accessors stay in `mod.rs`.
+  The 11 inline CRDT tests moved to `crates/outl-core/tests/tree_unit.rs`.
+  **Algorithm semantics unchanged** — verified line-by-line against Kleppmann et al. 2022 and against the full invariant battery (convergence, cycle, cycle_chain, concurrent_edit_move, concurrent_delete_edit, late_op, idempotency, fractional_index, property_based, large_log: 32/32 green).
+- **`crates/outl-tui/src/input.rs` (835 lines) → `crates/outl-tui/src/input/{mod, normal, insert, overlay, visual}`** — one handler per file, shared helpers (`cross_block_step`, `cursor_inside_open_fence`, `cross_block_nav_eligible`) stay in `mod.rs`.
+- **`crates/outl-tui/src/actions/block.rs` (843 lines) → `crates/outl-tui/src/actions/block/{mod, insert, structural, backlink_edit, metadata}`** — Insert mode in `insert.rs`, create/indent/outdent/delete/move in `structural.rs`, cross-page backlink ops in `backlink_edit.rs`, properties + TODO toggle + pin in `metadata.rs`.
+  TODO-prefix cycle helpers shared via `mod.rs`.
+- **`crates/outl-tui/src/actions/lifecycle.rs` (669 lines) → `crates/outl-tui/src/actions/lifecycle/{mod, index_build, peer_sync, external, loading, persistence}`** — `App::new` and the shared `file_mtime` helper in `mod.rs`.
+  Each submodule owns one concern.
+
+No public API changed during the splits.
+Clients (mobile, CLI, external consumers) need no update.
+
+### Documentation
+
+- **Anti-duplication policy** added to the root `CLAUDE.md` and echoed in every per-crate `CLAUDE.md`.
+  Captures the lesson surfaced by the parallel `Backlink` structs and the near-miss with `line_start_and_column` (almost re-derived inside `EditBuffer` before the inverse `line_col_to_char` landed in `outl-md::view`).
+  Rule: grep upstream first, prefer evolving the existing API over cloning the math.
+
+### Internal
+
+- `outl_md::Backlink`, `WorkspaceIndex.backlinks`, `refresh_backlinks_from_source`, `patch_backlink_text`, `flatten_backlink_subtree`, `outl_md::index::Backlink` removed.
+- `outl_md::view` gained the `line_col_to_char` inverse.
+- `outl_core::Tree.{nodes, properties, collapsed}` are now `pub(super)` so the split submodules can reach them.
+  Public API unchanged.
+
+## [0.5.1] — 2026-06-01
+
+**Fix: multi-process writes against the same workspace.**
+
+0.5.0 inherited an exclusive `flock` on `<root>/.outl/.lock` from the SQLite era.
+The lock made sense when two writers on a single `log.db` would race, but JSONL stores one file per actor — the exclusive scope just blocked every legitimate co-tenant: TUI + MCP server, MCP server + `sink-outl` plugin, two CLI calls in flight.
+Symptom: `INVALID_ARG: workspace ... is locked by another outl process` from the second opener, while the first ran fine and held the lock for its whole session.
+
+0.5.1 splits coordination into two locks.
+**Concurrent TUI + MCP server + CLI subprocess is the supported case** from here on.
+
+### Added
+
+- **`outl_core::WorkspaceLock` is now shared** (`LOCK_SH`).
+  Every well-behaved `outl` process piles on.
+  The lock still surfaces a hard filesystem error when `flock` itself fails, but never rejects a legitimate second opener.
+- **`outl_core::ActorWriteLock`** — exclusive `flock` on `<root>/ops/.lock-<actor>`.
+  Held by exactly one process per actor id at a time.
+  This is the new write-coordination boundary.
+- **`outl_core::resolve_write_actor(ops_dir, config_actor)`** — helper used by every workspace opener.
+  Tries `config_actor` first; on `AlreadyHeld`, generates `ActorId::new()` and locks the ephemeral one instead.
+  Returns the lock + actor id pair.
+- **`WsCtx.ephemeral_actor: bool`** flag on the CLI/MCP context so `outl doctor` / `outl workspace info` can show when a process is writing under an ephemeral actor.
+
+### Changed
+
+- **`outl-cli::ws::open`** acquires the shared workspace lock plus a per-actor write lock through `resolve_write_actor`.
+  On `outl` invocations that land while a server/TUI already holds the config actor, this process spins a fresh `ops-<ephemeral>.jsonl` and writes there.
+  Readers merge every `ops-*.jsonl` in `ops/`, so peers see the full op log.
+- **`outl-tui::open_workspace`** follows the same flow.
+  The TUI used to refuse to launch when an MCP server was running against the same workspace; it now coexists.
+
+### Why the ephemeral-actor fallback is safe
+
+Every actor is independent at the CRDT layer (it's literally the mechanism multi-device sync relies on).
+Two processes on the same device using two different actors merge the same way two devices would: the readers replay every `ops-<actor>.jsonl` in HLC order, the tree converges.
+The only cost is `ops/` accumulating one jsonl per ephemeral lifetime — typically tiny files (a session's writes), and a future `outl gc` can consolidate them per device.
+
+### Migration
+
+None. 0.5.0 workspaces work as-is.
+The next time you open a workspace with a second `outl` process, it will silently mint an ephemeral actor; the first process keeps writing under `config.toml[workspace].actor_id` as before.
+
+## [0.5.0] — 2026-06-01
+
+**Breaking: SQLite is gone.
+JSONL is the only persistent storage.**
+
+0.4.x kept two storage backends side by side — `SqliteStorage` for local-only workspaces and `JsonlStorage` for shared/synced ones.
+The result was a class of "writes go through but disappear when you open the other client" bugs: any code path that opened a workspace via `outl-cli` got SQLite, while `outl-tui` and mobile (Tauri) followed `config.toml[workspace].storage` and got JSONL.
+Same workspace, divergent op logs, silent loss.
+
+0.5.0 collapses the surface: every client opens the workspace as `JsonlStorage` rooted at `<root>/ops/`.
+There is no flag to choose, no `[workspace].storage` knob with two valid values, no SQLite fallback.
+The `Storage` trait stays in place for future backends (ChronDB on the roadmap); the only impl that ships is JSONL plus the in-memory test double.
+
+### Migration from 0.4.x
+
+If your workspace was created with 0.4.x and you have data in `<root>/.outl/log.db`, the migration is a strict three-step sequence. 0.5.x cannot read SQLite and 0.4.1 is the last release that shipped `outl migrate-to-shared` (which this PR removed):
+
+```bash
+# 1. Pin 0.4.1 (last release with migrate-to-shared)
+cargo install outl-cli --version 0.4.1 --locked
+
+# 2. Run the one-shot migration (idempotent, leaves log.db intact)
+outl migrate-to-shared <workspace>
+
+# 3. Confirm ops/ops-<actor>.jsonl grew, then upgrade
+cargo install outl-cli --version 0.5.1 --locked
+
+# 4. Once you've verified peers see your data, delete log.db yourself
+rm <workspace>/.outl/log.db <workspace>/.outl/log.db-shm <workspace>/.outl/log.db-wal
+```
+
+If you already had a mixed `log.db + ops/` workspace under 0.4.x, step 2 is still required — `migrate-to-shared` is idempotent (HLC dedup) and any ops that only ever made it into SQLite move over on this run.
+After step 3, 0.5.x ignores `log.db` entirely.
+
+### Removed
+
+- **`SqliteStorage`** in `outl-core::storage`.
+  Callers use `JsonlStorage` (persistent, per-actor JSONL) or `MemoryStorage` (the new in-memory test double, replaces `SqliteStorage::open_in_memory`).
+- **`rusqlite` dependency.** Workspace `Cargo.toml` no longer pulls the SQLite C bundle.
+  Faster builds, smaller binaries.
+- **`outl migrate-to-shared`** subcommand.
+  It only made sense while both backends coexisted; with only one backend the migration is a one-shot done on 0.4.1 before upgrading.
+- **`config.toml[workspace].storage`** field is silently ignored now (kept readable so old configs don't error).
+  Cleaning it up is fine but not required.
+
+### Changed
+
+- **`Paths` struct (`outl-cli/src/workspace_layout.rs`)** drops the `db: PathBuf` field, gains `ops: PathBuf` pointing at `<root>/ops/`.
+  Every caller that touched `.outl/log.db` now targets the JSONL directory.
+- **`outl init`** scaffolds `<root>/ops/` and opens `JsonlStorage` to materialize the per-actor `ops-<actor>.jsonl` file.
+  The human output now reports `ops:` instead of `log:`.
+- **`outl doctor`** drops the SQLite `PRAGMA integrity_check` finding and replaces it with a JSONL parse-and-load check (`JsonlStorage::open` surfaces every unreadable line via `tracing::warn!`, then the report carries the op count and the set of known node ids the sidecar cross-check needs).
+- **`outl workspace info --json`** renames the `log_db` field to `ops_dir`.
+  Stable-envelope shape otherwise unchanged.
+- **`outl-tui::open_storage`** is now a one-liner.
+  The config-driven match disappears; storage is always JSONL.
+- **`Workspace::open_in_memory`** is unchanged in signature but uses the new `MemoryStorage` under the hood.
+  No filesystem touch.
+
+### Internal
+
+- New `MemoryStorage` in `outl-core::storage::memory`.
+  Pure `Vec<LogOp>` + snapshot slot, no I/O.
+  Used by every test that previously called `SqliteStorage::open_in_memory()` and by `Workspace::open_in_memory`.
+
+## [0.4.1] — 2026-06-01
+
+Batch authoring for agents and scripts.
+The 0.4.0 CLI / MCP surface covered every primitive write, but creating a structured page meant chaining N tool calls — one per block — which costs round-trips, turn budget on the agent, and time. 0.4.1 collapses that into the three composite shapes an agent or import pipeline actually wants: write a subtree, create a page with content, and stream a sequence of writes in one workspace session.
+
+No storage or op-log format changes — every new tool is shimmed over the existing `outl-actions` primitives (`append_block`, `edit_text`, `set_property`).
+Drop-in upgrade from 0.4.0.
+
+### Added — composite write surface
+
+- **`outl_block_append_tree` / `outl block append-tree`.** Append a root block plus its recursive children under a page or block in a single op-log session.
+  Input shape: `{"text": "...", "children": [{"text": "...", "children": [...]}]}`.
+  Response mirrors the input with `id` at every node so the caller can map specs back to freshly minted ids.
+  CLI accepts the JSON inline (`--tree '{...}'`) or via stdin (`--tree -`).
+- **`outl page create --content` / `outl_page_create` with `content`.** A new page lands with its full outline forest in one call instead of `page_create` + N × `block_append`.
+  Accepts either a single root (`{text, children?}`) or a forest (`[{...}, {...}]`); the returned `content` array carries the block ids.
+  Skipping the field keeps the historical empty-page behaviour.
+- **`outl batch` / `outl_batch`.** Apply a list of writes sequentially in one workspace session.
+  Supported `op` names: `page_create`, `page_update`, `page_delete`, `page_rename`, `block_append`, `block_append_tree`, `block_insert`, `block_update`, `block_move`, `block_delete`, `block_toggle_todo`, `daily_append`, `page_prop_set`.
+  Each op's `args` mirror the matching standalone tool.
+  **Stop-on-first-error semantics:** earlier ops stay in the op log (they're already CRDT ops; we don't roll them back), and the response carries `failed_at` / `failed_op` / `error` so the caller can recover or retry only the suffix that never ran.
+  CLI exit code is `1` on partial failure.
+
+### Added — `outl-actions::block`
+
+- **`append_tree`, `append_forest`.** UI-agnostic primitives behind the new composite tools.
+  `BlockTreeSpec` + `BlockTreeOutcome` are the shared DTOs (serde Serialize / Deserialize) so both client layers and future plugins can compose subtrees without re-deriving the recursion.
+
+### Added — bench
+
+- **`bench-cli-xlarge` workflow job.** Weekly + dispatch only.
+  Generates a 10k-page batch payload via the new `xtask gen-10k` binary, applies it through `outl batch` end-to-end (subprocess + workspace lock + op log + sqlite + sidecar + md write), then runs `hyperfine` on `page list`, `search`, `query --tag`, `page get`, and `page render` against the populated workspace.
+  Catches regressions in the surface that wraps the algorithm — the existing `bench-xlarge` job stays focused on the algorithm itself via criterion micro-benches.
+- **`xtask` workspace member.** Internal task runner; today ships `gen-10k` (deterministic batch-payload generator) and is where any future codegen / fixture / bench helper lands.
+
+### Docs
+
+- `docs/cli.md` — new **Batch** section with the payload shape and failure semantics; `page create --content` and `block append-tree` documented inline next to the existing primitives.
+- `docs/mcp.md` — multi-block authoring callout pointing at the three new composite tools.
+
+## [0.4.0] — 2026-06-01
+
+outl becomes scriptable.
+A full machine-shaped CLI (page, block, daily, search, query, tag, prop, backlinks, export, workspace) lands with a stable JSON envelope and exit codes, and the same handlers are exposed over MCP via `outl mcp serve` (JSON-RPC over stdio) so Claude Desktop, Cursor, and any other agentic client can drive a workspace without parsing TUI output.
+Business logic stays in `outl-actions`; the CLI and MCP are thin shims over the same code.
+
+No storage or op-log format changes — drop-in upgrade from 0.3.x for data on disk.
+**One breaking flag rename** for shell/cron users: `--path` is now `--workspace` everywhere.
+
+### CLI (`outl-cli`) — new machine surface
+
+- **Subcommands cover the full workspace API.** `outl page {list,get,create,rename,delete,prop}`, `outl block {get,edit,create,delete,move,toggle}`, `outl daily {today,get,range}`, `outl search`, `outl query`, `outl tag {list,page}`, `outl prop {list,page}`, `outl backlinks {page,block,embed}`, `outl export hugo`, `outl workspace {info,doctor}`.
+  Every command writes a stable JSON envelope (`{ok, data, error, meta}`) to stdout and a typed exit code, so scripts and CI never have to scrape human output.
+  `--human` keeps the friendly table format for interactive use.
+- **One Workspace per process, index cached.** Each invocation opens the workspace once, reuses the in-memory index, and drops the per-call SQLite replay that older `outl serve`-style flows paid.
+- **`--workspace` replaces `--path`.** The TUI, server, doctor, and every new subcommand now take `--workspace <dir>`.
+  Existing scripts that pass `--path` must rename the flag (env var stays `OUTL_WORKSPACE`).
+  The TUI's positional path argument is unchanged for direct double-clicks.
+- **CLI integration suite** (`cli_machine.rs`) exercises page, block, search, and workspace commands against a real workspace so envelope shape and exit codes can't drift.
+
+### MCP server (new: `outl mcp serve`)
+
+- **JSON-RPC over stdio.** `outl mcp serve --workspace <dir>` speaks the MCP protocol with `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, and `prompts/get`.
+  Drop the binary into Claude Desktop's `claude_desktop_config.json` or Cursor's `mcp.json` and the agent can read journals, search, follow backlinks, edit blocks, and toggle TODOs against the same workspace your TUI/mobile is using.
+- **Tools** mirror the CLI 1:1 (`outl_page_*`, `outl_block_*`, `outl_daily_*`, `outl_search`, `outl_query`, `outl_tag_*`, `outl_prop_*`, `outl_backlinks_*`, `outl_workspace_*`) so the LLM sees the same surface a human would script.
+- **Resources** expose read-only views over `outl://daily/today`, `outl://page/<slug>`, `outl://search?q=…`, etc., for clients that prefer URI-addressed reads to tool calls.
+- **Prompts** ship `summarize_day` and friends so the agent can pull a daily-note summary in one round-trip.
+- **Per-session workspace + cached index.** The MCP server holds one `WsCtx` for the life of the session and routes every read through `ServerCtx::with_workspace`, which reuses that handle and invalidates the index after lazy journal materialisation in `outl://daily/today` and `summarize_day`.
+  Earlier prototypes opened a fresh `WsCtx` per call and self-deadlocked on the workspace lock the session already owned — `resources/read` and `prompts/get` are now part of the same cached path as `tools/call`.
+- **MCP smoke suite** (`mcp_smoke.rs`) walks `initialize` → `tools/list` → `tools/call` → `resources/read` in one session so the lock-reuse contract can't regress.
+
+### Security / hardening
+
+- **Slug validation at the boundary.** `outl-actions::is_valid_slug` rejects empties, `.`/`..` traversal, path separators, and control chars before any filesystem write, surfaced as a typed `ActionError::InvalidSlug` (`INVALID_ARG` in the CLI/MCP envelope).
+  Hugo export adds a second `target_within` check against canonicalised paths so a legacy bad slug imported from disk still cannot escape `--out`.
+- **Doctor split.** `workspace doctor` runs `collect_json` (full lock probe, used by `outl doctor` from the shell) and `collect_in_session_json` (probe off, used by the MCP tool which already owns the lock).
+  Before this split, `outl_workspace_doctor` always warned about the workspace lock on perfectly healthy workspaces.
+- **Quieter failures stop being silent.** Page delete/rename replace `let _ = remove_file(...)` with a `remove_or_warn` helper so a broken filesystem surfaces in logs instead of disappearing.
+  Regression tests cover malicious slugs, doctor-clean inside an MCP session, and delete being idempotent when the `.md` is already gone.
+
+### Docs
+
+- New `docs/cli.md` and `docs/mcp.md` cover the machine surface and the MCP wiring for Claude Desktop / Cursor end to end (envelope shape, every subcommand, every tool, every resource).
+- Getting-started, tutorial, sync, theming, TUI, and clients docs refreshed for the `--workspace` rename and the new subcommand names.
+
+## [0.3.1] — 2026-05-31
+
+Mobile UX polish + autocomplete fixes.
+No protocol or storage changes — drop-in upgrade from 0.3.0.
+
+### Mobile (`outl-mobile`)
+
+- **Autocomplete (`[[…]]`) now actually fires on iOS.** The native ref suggester chip strip was orphaned — `createEffect` was being registered after an `await` inside `onMount`, which lost Solid's reactive owner.
+  State was published once at boot and never updated as the user typed.
+- **TODO/DONE prefix is visible (and editable) in Insert mode.** Tapping a TODO block used to show only the checkbox + body (`ship it`) with the `TODO` prefix hidden, so erasing the prefix from the editor was impossible.
+  Now the prefix appears in the textarea (`TODO ship it`) and the checkbox flips to a bullet while editing — toggling state via the text Just Works.
+- **Cursor lands inside `[[ ]]` / `(( ))` reliably.** `el.value = …` resets the textarea caret in iOS WKWebView; combined with Solid's `value={draft()}` rebinding the caret could end up outside the pair.
+  Replaced with `setRangeText` + double `parkCaret` (sync + microtask) so every toolbar insert, paste completion, and suggester pick parks the caret where the user expects it.
+- **Backspace inside empty `[[]]` / `(())` collapses the pair.** No more mashing backspace four times to undo an aborted ref.
+  Same rule on TUI and mobile.
+- **Smart Punctuation is OFF.** `--` no longer becomes `–`, `...` no longer becomes `…`, quotes stay straight.
+  Code snippets and CLI commands in journals survive intact.
+- **Toast pattern for errors** (auto-dismiss + Retry button) in place of the persistent red `<p>` that sat in the middle of the outline forever.
+  Failed saves now offer a one-tap retry without losing the draft.
+- **`commitInFlight` lock + 8 s timeout** serializes concurrent block edits (typing → TODO toggle → blur) so the older save never overwrites the newer, and a stuck Tauri command can't freeze Insert mode indefinitely.
+- **Progressive loading message** ("Loading…" → "Connecting to iCloud…" → "Still waiting on iCloud…") + spinner + a Retry button on terminal failure. iCloud cold-start no longer reads as "the app froze".
+- **Connectivity-aware SyncDot** uses `navigator.onLine` + `online`/`offline` listeners to actually show the offline pip (was dead code before).
+  `aria-label` instead of `title` so iOS WKWebView users get the status verbally.
+- **Tap targets meet Apple HIG** (~30 × 30 hit area on the bullet/checkbox; bullet is now actually tappable).
+  `[[ref]]` and `#tag` taps navigate instead of opening the editor.
+- **Long-press TODO** uses a distinct success haptic when creating a new TODO vs. cycling an existing one.
+- **`SwipeRow` × `SwipeNavigator` conflict resolved** — swipe-right on the left edge no longer races the per-row swipe-delete (each one captures only its own direction).
+- **`PageSwitcher`** opens the first match on `Enter`, dismisses on `Escape`, and supports swipe-down on the handle to dismiss (without stealing scroll from the list).
+- **Backlinks empty state** so the bidirectional-linking concept is discoverable on freshly-created pages.
+- **Performance** in long outlines: `draft()` is now a lazy getter prop only read by the block being edited (was triggering a reactive effect in every BlockRow per keystroke).
+  Auto-resize coalesced into a single `requestAnimationFrame`.
+
+### Shared (`outl-actions`)
+
+- `edit_text` writes its argument **verbatim** instead of preserving a leading `TODO`/`DONE` prefix automatically.
+  Callers that surface state separately (mobile checkbox) reattach the prefix themselves — required so erasing the prefix in the editor actually sticks.
+  TUI path is unaffected (it always passes the raw block text through reconcile).
+
+### TUI (`outl-tui`)
+
+- Backspace inside an empty `[[]]` / `(())` now collapses both brackets in one keystroke (matches the mobile behaviour).
+
+## [0.3.0] — 2026-05-30
+
+Cross-device sync goes live.
+A brand-new iOS app and the TUI share the same workspace over iCloud Drive, both driven by a shared `outl-actions` crate.
+Block refs / embeds land in the markdown dialect.
+
+### Mobile (`outl-mobile`) — new crate
+
+- **Tauri 2 + SolidJS iOS client.** Bundle id `app.outl.mobile-app`, iCloud container `iCloud.app.outl.mobile-app`.
+  Frontend is Solid + Tailwind; the Rust shell is intentionally thin (every workspace operation delegates to `outl-actions`).
+- **iCloud Drive transport.** Workspace lives at `<ubiquity-container>/Documents/`.
+  An ObjC bridge (`gen/apple/.../main.mm`) uses `NSMetadataQuery` to watch for peer changes and `NSFileCoordinator` + `startDownloadingUbiquitousItemAtURL` to force materialisation before reads — without those two steps the Rust side races the iCloud daemon and sees truncated op logs.
+- **Per-device actor id** persisted under the app sandbox so each install writes to its own `ops-<actor>.jsonl`.
+- iOS boot flash fixed; outl brand (palette + icon) applied across the app.
+
+### Shared client (`outl-actions`) — new crate
+
+- **Extracted every workspace mutation** (block edit, TODO toggle, indent / outdent, sibling create, delete, move, journal render, sync) out of `outl-tui` into a UI-agnostic crate.
+  Functions take `&mut Workspace` + `&HlcGenerator` and route through `Workspace::apply` so the op log stays source of truth.
+- TUI and mobile call the **same** functions for the same semantics — drift between clients is no longer possible by construction.
+- `SyncEngine` interface owns the cross-device merge loop; iCloud is the v0 transport, iroh (phase 2) plugs in behind the same trait.
+
+### Core (`outl-core`)
+
+- **`JsonlStorage` op-log backend.** Single-file SQLite breaks under iCloud / Syncthing because the FS layer is last-write-wins per file.
+  JSONL gives each actor its own `ops-<actor>.jsonl`, writes only to the local file, and merges every peer file on read.
+- Folder layout is **`ops/`**, not `.ops/`. iCloud Documents skips dotted paths during cross-device sync — using a dot silently breaks multi-device workspaces.
+  Same rule applied to the sidecar (`pages/<slug>.outl`, no leading dot).
+
+### Markdown (`outl-md`)
+
+- **`((blk-X))` inline refs and `!((blk-X))` embeds.** Stable `ref_handle` derived from the block's ULID tail (lazy 7+ char expansion on collision); sidecar bumped to v2.
+  Embeds expand to the source root + children with a `↳` marker.
+- Concurrent-safe writes over iCloud (atomic temp-file rename, no partial reads exposed to peers).
+- `WorkspaceIndex` tracks block-ref backlinks alongside page-ref backlinks.
+
+### TUI (`outl-tui`)
+
+- Rebuilt as a **peer of shared workspaces** — same iCloud folder, same op log, same `outl-actions`.
+  Edits on the laptop appear on the iPhone within seconds and vice versa.
+- `((` autocomplete on block text, inline ref render, expanded embed view, Enter navigation to the source block, `/refer` and `/refer-embed` slash commands.
+- `yr` chord copies the block's ref handle to the OS clipboard via arboard.
+- outl brand (palette, icon, chrome) applied; mobile and TUI now look like the same product.
+
+### CLI (`outl-cli`)
+
+- **`outl migrate-to-shared` subcommand** rewrites a legacy SQLite workspace into the JSONL + sidecar layout consumed by both clients.
+- `outl doctor` flags orphan `((blk-X))` and `!((blk-X))` handles.
+
+### CI / release
+
+- Release workflow rewritten as `prepare → tag → create_release (draft) → build matrix → publish_release`.
+  Single `gh release create --draft` before the matrix and `gh release upload --clobber` per matrix leg, so paralleled jobs don't race each other on a repo with Immutable Releases turned on.
+- macOS Intel binary now cross-compiles from `macos-latest` (ARM) instead of relying on the depleted `macos-13` runner pool.
+- `outl-mobile` excluded from Linux CI jobs (Tauri iOS toolchain is macOS-only).
+
+## [0.2.0] — 2026-05-26
+
+Backlinks become a first-class part of the TUI: they live inline below the outline (no more side panel), render the referencing block with its children, and are fully editable in place.
+
+### TUI (`outl-tui`)
+
+- **Inline backlinks.** Replace the right-side panel with a section rendered below the outline, separated by a full-width `─` rule.
+  Each source page shows up grouped under an icon + title header.
+- **Full source block + children.** Backlinks render the referencing `OutlineNode` _with its subtree_ (not a truncated snippet), so you see context without jumping to the source page.
+- **Cursor navigation crosses the boundary.** `j`/`k` flow transparently between outline and backlinks.
+  `app.focus: Focus::{Outline, Backlink{idx, sub_path}}` tracks where the cursor lives.
+- **In-place edits land on the source `.md`.** `i`/`I`/`a`/`Esc`, `Ctrl+T` (TODO/DONE cycle), `o`/`O` (sibling create), `Tab`/`Shift+Tab` (indent/outdent), `dd` (delete), `K`/`J` (move up/down) — all work on a backlink the same way they work on the outline, persisting straight to the source page via `EditTarget::SourcePage`.
+- **Optimistic index updates for snappy UX.** Edits patch the in-memory `WorkspaceIndex` immediately (next frame shows the new state), then save without scheduling a full workspace rebuild on the hot path.
+- Cursor column preserved when entering Insert (`i` honors vim semantics; `I` still jumps home).
+- Ghost cursor on the last outline block when focus had moved into the backlinks section is gone (`render_block` gates by `Focus::Outline`).
+- `view.rs` split into `view/{inline, outline, overlays, backlinks}.rs` by responsibility — each file under 450 lines.
+
+### Markdown (`outl-md`)
+
+- `Backlink` carries the full `source_block: OutlineNode` and its `source_block_path` (DFS path in the source AST) instead of a flat index plus truncated snippet.
+  Repeated refs to the same target inside one block collapse to a single backlink.
+- `WorkspaceIndex::refresh_backlinks_from_source(path, &page)` — optimistic patch of every cached `source_block` for backlinks pointing at `path`.
+  Used by the TUI's cross-page edit path.
+- `WorkspaceIndex::patch_backlink_text(path, target_path, &new_text)` for text-only optimistic edits.
+
+## [0.1.0] — 2026-05-25
+
+First public release.
+Single-device editor; sync transport is on the roadmap but the algorithm and op-log infrastructure are already in.
+
+### Core (`outl-core`)
+
+- Tree CRDT implementation following Kleppmann et al. 2022 (`do_op` / `undo_op` / `apply_op` / `creates_cycle`).
+- HLC timestamps with actor tiebreak.
+- Append-only op log with sqlite backend (`SqliteStorage`).
+- `Storage` trait so alternative backends (e.g.
+  ChronDB) can slot in without touching the CRDT.
+- Workspace file lock via `fs2::flock` — two `outl` processes on the same workspace get a clean error, not a race.
+- Property-based test of strong eventual consistency over 100+ randomised op permutations.
+
+### Markdown / sidecar (`outl-md`)
+
+- CommonMark parse + render with the outl dialect (`title::`, `icon::`, page/block properties, `[[refs]]`, `#tags`, `((block-id))`, fenced code blocks, multi-line block text).
+- `.foo.outl` JSON sidecar holding the IDs the `.md` deliberately doesn't carry.
+  **The `.md` stays clean** — no `id::`, no UUIDs.
+- 3-level matching algorithm (`outl-md::matching`) reconstructs which block kept which ID after an external editor saves the file.
+- Workspace index (`WorkspaceIndex`) — title, icon, slug, backlinks, tag namespace; powers the switcher, autocomplete and backlinks panel.
+  Built once on boot, refreshed in a worker thread on save.
+- Roundtrip property test: `parse(render(ast)) == ast` over randomly generated outlines including multi-line and fenced cases.
+
+### Code-block execution (`outl-exec`)
+
+- `Runtime` trait + `RuntimeRegistry`.
+  Shipped runtimes (each behind a Cargo feature for opt-out distributions):
+  - `lisp` — Steel (Scheme R5RS-ish in pure Rust).
+  - `js` — Boa (ES2015+ in pure Rust).
+  - `python` — RustPython (Python 3 subset).
+  - `lua` — mlua 5.4 (vendored).
+  - `rust` — `rustc → wasm32-wasip1 → wasmtime`.
+    Compiled artefacts cached in `~/.cache/outl/runtimes/rust/<hash>.wasm`. ~20× faster on a re-run of the same snippet.
+- WASM sandbox infrastructure (wasmtime engine + WASI ctx with no preopens / no env / no sockets, fuel-based instruction cap, epoch-interruption timeout, in-memory stdin/stdout/stderr).
+- Idempotent result subblock — re-running the same code overwrites the existing `> **result:**` child instead of duplicating it.
+- `source-hash::` stamped on each result child so the upcoming auto-run loop can short-circuit unchanged sources.
+
+### TUI (`outl-tui`)
+
+- Journal-first: opens on today's date.
+- Vim-style modes (Normal / Insert / Visual) with chord support (`dd`, `gg`, `gx`, `yy`, `qq`-to-quit).
+- Insert mode autocomplete for `[[refs]]`, `#tags`, and `/commands` (Notion-style slash menu).
+- Slash command system + vim palette share one registry — every built-in command shows up in both.
+  Built-ins: `prop-block`, `prop-page`, `search`, `run`, `theme`, `today`, `open`, `refresh`, `write`, `quit`, `help`.
+  The registry is the plugin-extension point.
+- `gx` runs the code block under the cursor through `outl-exec`.
+- `auto-run::` property runs a block automatically on page open (cache-aware via SHA-256 of the source).
+- `icon::` page property surfaces in every place the title shows (header, switcher, backlinks panel, search results, autocomplete, inline `[[refs]]`).
+- Multi-line blocks via `Alt+Enter` / `Ctrl+J` / `Shift+Enter` (Shift+Enter only on terminals that speak the kitty keyboard protocol); plain `Enter` auto-detects an open code fence and inserts a soft newline inside it.
+- Vertical scroll with `PgUp`/`PgDn`/`Ctrl+D`/`Ctrl+U`/`gg`/`G` and auto-scroll when the selection moves off-screen.
+- Hot reload on external `.md` edits (polls mtime every 750ms; warns instead of clobbering when you're mid-Insert).
+- Error modal overlay for multi-line failures (rustc compile errors, traps, missing toolchain), keeping the status line for short successes.
+- Themes: 11 presets, switchable with `/theme <name>` at runtime.
+
+### CLI (`outl-cli`)
+
+- `outl` (no subcommand) opens the TUI in `$PWD`.
+- `outl init <path>` scaffolds a workspace.
+- `outl serve [--once]` reconciles `.md` files into the op log (one-shot or watch mode).
+- `outl import logseq <src> <dst>` and `outl import roam <backup.json> <dst>` strip `id::` lines, slugify, seed sidecars.
+- `outl doctor` and `outl reconcile` placeholders for the integrity and orphan-resolution flows.
+
+### Tooling / DX
+
+- Workspace MSRV: rustc 1.88.
+- CI: `fmt` + `clippy -D warnings` + `cargo test --workspace --all-targets` on Linux and macOS.
+- Bench CI: `small` / `medium` / `large` on every PR + push; `xlarge` (10k+ files) on weekly cron + manual dispatch.
+- File-size guard hook (`.claude/hooks/file-size-guard.sh`) blocks Rust files past ~900 LOC unless the change is intentional — forces a refactor conversation before drift accumulates.
+- Background workspace-index build: `App::new` paints the journal immediately and spawns a worker thread for the global index; backlinks/icons fill in within ~ms of boot.
+
+### License
+
+MIT.
+
+[0.1.0]: https://github.com/outlmd/outl/releases/tag/v0.1.0

@@ -1,0 +1,84 @@
+/* Baseline chrome for @outl/shared/trust. Uses the theme variables both
+   clients already define. */
+.outl-diff-removed {
+  text-decoration: line-through;
+  color: var(--color-outl-destructive, #c0392b);
+  opacity: 0.8;
+}
+.outl-diff-added {
+  background: color-mix(in srgb, var(--color-outl-accent, #3b82f6) 18%, transparent);
+  border-radius: 3px;
+}
+.outl-activity-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+.outl-activity-row[data-local] .outl-activity-name {
+  font-weight: 600;
+}
+.outl-activity-meta,
+.outl-activity-note {
+  opacity: 0.6;
+  font-size: 12px;
+}
+.outl-saved-mark {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-outl-accent, #3b82f6);
+  opacity: 0;
+  transition: opacity 400ms ease;
+  pointer-events: none;
+}
+.outl-saved-mark[data-on] {
+  opacity: 0.7;
+}
+@media (prefers-reduced-motion: reduce) {
+  .outl-saved-mark {
+    transition: none;
+  }
+}
+.outl-export-lead {
+  font-size: 13px;
+  opacity: 0.75;
+  margin: 0 0 10px;
+}
+.outl-export-btn {
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--color-outl-accent, #3b82f6) 14%, transparent);
+  color: var(--color-outl-accent, #3b82f6);
+}
+.outl-export-btn:disabled {
+  opacity: 0.6;
+}
+.outl-export-done,
+.outl-export-error {
+  margin-top: 8px;
+  font-size: 12px;
+  word-break: break-all;
+}
+.outl-export-error {
+  color: var(--color-outl-destructive, #c0392b);
+}
+.outl-trust-heading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  margin: 18px 0 6px;
+}
+.outl-diff-removed + .outl-diff-added {
+  margin-left: 3px;
+}
+
+.outl-merges { display: flex; flex-direction: column; gap: 10px; }
+.outl-merge-row { display: grid; gap: 4px; }
+.outl-merge-undo { justify-self: start; font-size: 12px; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--color-outl-border); background: transparent; color: inherit; cursor: pointer; }

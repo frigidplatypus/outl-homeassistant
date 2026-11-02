@@ -1,0 +1,195 @@
+name: bench
+
+# Two cadences:
+#
+#   - bench-quick (small + medium + large, up to ~1200 files)
+#     runs on every PR / push so we catch a perf regression near the
+#     commit that introduced it.
+#
+#   - bench-xlarge (10k+ files)
+#     runs on a weekly cron and on manual dispatch. Too slow + too
+#     noisy on shared GH runners to gate every PR, but valuable as a
+#     trend line.
+#
+# Both jobs upload criterion's HTML report as a build artifact so you
+# can diff visualisations across runs (download the zip, open
+# index.html locally).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/outl-md/**'
+      - '.github/workflows/bench.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/outl-md/**'
+      - '.github/workflows/bench.yml'
+  schedule:
+    # Mondays 09:00 UTC. Catches drift weekly even on quiet repos.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Cancel an in-flight bench run when a newer push (or a manual
+# dispatch) supersedes it. The xlarge tier takes long enough that two
+# overlapping runs from quick consecutive merges burn a lot of runner
+# time for results that will be overwritten anyway.
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench-quick:
+    # PR + push + manual + schedule all hit this job.
+    name: bench (small + medium + large)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain
+        run: rustup show
+      - name: Cache cargo registry & target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+            ${{ runner.os }}-cargo-
+      - name: Build benches
+        run: cargo bench -p outl-md --no-run
+      # The filter `'small|medium|large'` would also catch `xlarge`
+      # because criterion does substring matching — so we run the
+      # cheap tiers one at a time. Each is fast (sub-second) so the
+      # extra ceremony is fine.
+      - name: parse (all sizes)
+        run: cargo bench -p outl-md --bench parse
+      - name: index (small)
+        run: cargo bench -p outl-md --bench index -- "small_"
+      - name: index (medium)
+        run: cargo bench -p outl-md --bench index -- "medium_"
+      - name: index (large)
+        run: cargo bench -p outl-md --bench index -- "large_"
+      - name: Upload criterion report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: criterion-quick-${{ github.run_number }}
+          path: target/criterion/
+          if-no-files-found: warn
+          retention-days: 14
+
+  bench-xlarge:
+    # 10k files. Only scheduled or manual — GH runners are noisy and
+    # this takes minutes, not seconds. Keeps PR feedback fast.
+    name: bench (xlarge, 10k files)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain
+        run: rustup show
+      - name: Cache cargo registry & target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+            ${{ runner.os }}-cargo-
+      - name: Build benches
+        run: cargo bench -p outl-md --bench index --no-run
+      - name: index (xlarge)
+        # Shorter measurement window — 10k-file iters cost real time;
+        # default 5s × 100 samples would blow past 30 minutes.
+        run: |
+          cargo bench -p outl-md --bench index -- \
+            --warm-up-time 2 \
+            --measurement-time 10 \
+            --sample-size 10 \
+            "xlarge_"
+      - name: Upload criterion report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: criterion-xlarge-${{ github.run_number }}
+          path: target/criterion/
+          if-no-files-found: warn
+          retention-days: 30
+
+  bench-cli-xlarge:
+    # End-to-end CLI bench: subprocess + workspace lock + op log +
+    # sqlite + sidecar + md write — the path the user actually walks.
+    # `bench-xlarge` above stays focused on the algorithm; this job
+    # catches regressions in the surface that wraps it.
+    name: bench CLI (xlarge, 10k via outl batch)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain
+        run: rustup show
+      - name: Cache cargo registry & target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-cli-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-cli-
+            ${{ runner.os }}-cargo-bench-
+            ${{ runner.os }}-cargo-
+      - name: Install hyperfine
+        # Hyperfine 1.21 needs rustc 1.97. The workspace toolchain is 1.99.1
+        # (rust-toolchain.toml), so the 1.20 pin is no longer required.
+        # 2.0.0 changes the `--export-json` schema and runs commands without
+        # a shell; this job stays on 1.21 until the artifact readers move.
+        run: cargo install hyperfine --version 1.21.0 --locked
+      - name: Build release binaries
+        run: cargo build --release -p outl-cli -p xtask
+      - name: Generate 10k-page batch payload
+        run: |
+          mkdir -p /tmp/outl-bench
+          ./target/release/gen-10k --pages 10000 --blocks-per-page 3 \
+            > /tmp/outl-bench/pages.json
+          wc -c /tmp/outl-bench/pages.json
+      - name: Init workspace
+        run: ./target/release/outl init /tmp/outl-bench/ws
+      - name: Apply 10k pages via outl batch (one call)
+        run: |
+          start=$(date +%s)
+          ./target/release/outl -w /tmp/outl-bench/ws batch --json \
+            < /tmp/outl-bench/pages.json \
+            | tee /tmp/outl-bench/batch-result.json \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print("applied=", d["data"]["applied"])'
+          end=$(date +%s)
+          echo "batch wall-clock: $((end - start))s"
+      - name: Hyperfine read ops
+        run: |
+          hyperfine --warmup 3 --runs 10 \
+            --export-json /tmp/outl-bench/hyperfine.json \
+            './target/release/outl -w /tmp/outl-bench/ws page list --json' \
+            './target/release/outl -w /tmp/outl-bench/ws search "block" --json --limit 50' \
+            './target/release/outl -w /tmp/outl-bench/ws query --tag=meeting --json' \
+            './target/release/outl -w /tmp/outl-bench/ws page get page-05000 --json' \
+            './target/release/outl -w /tmp/outl-bench/ws page render page-05000'
+      - name: Upload bench artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-bench-${{ github.run_number }}
+          path: |
+            /tmp/outl-bench/hyperfine.json
+            /tmp/outl-bench/batch-result.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,26 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "log:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "os:allow-hostname",
+    "deep-link:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "clipboard-manager:allow-read-text",
+    "notification:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "http://*" },
+        { "url": "https://*" },
+        { "url": "mailto:*" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+/*
+ * Syntax highlight tokens.
+ *
+ * Imported by `outl-mobile/src/styles.css` and `outl-desktop/src/styles.css`
+ * via `@import "@outl/shared/highlight/styles"`. The clients keep
+ * their own canvas (background, padding) via `.outl-codeblock`; this
+ * file only paints the `.hljs-*` token classes that highlight.js
+ * emits.
+ *
+ * Palette aligns with the outl brand (deep-purple accent, warm hues
+ * for strings, dim for comments) instead of pulling a stock theme
+ * like `github-dark.css`. The same set of tokens works for light
+ * and dark — they both read against the brand-dark canvas; light
+ * mode users see brand-dark codeblocks too. Bear and Notion ship
+ * single-theme code blocks for the same reason.
+ */
+
+.outl-codeblock {
+  background: #15101f; /* brand --color-outl-bg-elev (outl preset) */
+  color: #f4f1fa;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-family:
+    "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.outl-codeblock code,
+.outl-codeblock .hljs {
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Comments + meta — dim grey so they read as "context, not code". */
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+  color: #6c6386;
+  font-style: italic;
+}
+
+/* Keywords + flow control — outl accent purple. */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-name,
+.hljs-tag {
+  color: #a78bfa;
+  font-weight: 600;
+}
+
+/* Strings — warm peach (same family as the destructive red but
+ * pulled toward orange so it doesn't shout). */
+.hljs-string,
+.hljs-doctag,
+.hljs-template-tag,
+.hljs-regexp,
+.hljs-link {
+  color: #fb923c;
+}
+
+/* Numbers, literals, booleans — cool teal. Differentiates from
+ * strings at a glance. */
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: #5eead4;
+}
+
+/* Identifiers / variables — base body text, no recolor. Stops the
+ * "rainbow code" effect that hurts long blocks. */
+
+/* Types + classes — soft yellow. */
+.hljs-title,
+.hljs-section,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-type,
+.hljs-class .hljs-title {
+  color: #fde68a;
+}
+
+/* Function calls + decorators — light blue. */
+.hljs-function .hljs-title,
+.hljs-attribute,
+.hljs-attr {
+  color: #93c5fd;
+}
+
+/* Operators / punctuation — muted lavender so they recede. */
+.hljs-operator,
+.hljs-punctuation {
+  color: #b4adc7;
+}
+
+/* Diff hunks + git ranges — needed because users paste diffs
+ * verbatim. */
+.hljs-addition {
+  background: rgba(94, 234, 212, 0.16);
+  color: #5eead4;
+}
+.hljs-deletion {
+  background: rgba(251, 113, 133, 0.16);
+  color: #fb7185;
+}

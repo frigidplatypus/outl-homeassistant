@@ -1,0 +1,80 @@
+[package]
+name = "outl-cli"
+description = "The `outl` command-line binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+publish = false
+
+[[bin]]
+name = "outl"
+path = "src/main.rs"
+
+[dependencies]
+outl-core = { workspace = true }
+outl-md = { workspace = true }
+outl-actions = { workspace = true }
+outl-ws = { workspace = true }
+outl-import = { workspace = true }
+# `outl doctor` validates a `[theme]` pair's light/dark sides via
+# `Palette::is_light()`. Already in the tree via `outl-tui`; this is not
+# a new build cost.
+outl-theme = { workspace = true }
+# `outl template run` needs a `RuntimeRegistry` to execute a callable
+# template. Default features (matching the TUI) so `lang-lua` et al. are
+# present — feature unification with `outl-tui` already pulls these in.
+outl-exec = { workspace = true, default-features = true }
+outl-plugins = { workspace = true, features = ["registry"] }
+outl-sync-iroh = { workspace = true }
+outl-config = { workspace = true }
+outl-tui = { workspace = true }
+# Crash reporting (RFC 0377). The dependency is unconditional; the *reporter*
+# is not. `outl-telemetry`'s own `sentry` feature is what links the SDK, and it
+# is off by default, so a build nobody passed `--features sentry` to contains
+# no reporter to switch on — that is condition 1, and it is why someone who
+# clones this repo and runs it has no Sentry in the binary at all.
+outl-telemetry = { workspace = true }
+anyhow = { workspace = true }
+# Terminal width only — a pairing QR wider than the terminal wraps into
+# an unscannable mess, so `outl peer pair` measures before it prints.
+# Already in the tree via `outl-tui`; this is not a new build cost.
+crossterm = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-full = { workspace = true }
+walkdir = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+chrono = { workspace = true }
+ulid = { workspace = true }
+parking_lot = { workspace = true }
+dirs = { workspace = true }
+# Hidden-input prompt for `outl plugin secret set` (never echo a token).
+rpassword = { workspace = true }
+# `outl plugin install github:…` clones into a temp dir and resolves the
+# newest semver tag.
+tempfile = { workspace = true }
+semver = { workspace = true }
+# Only `outl peer pair` needs a runtime — to drive the async iroh pairing
+# handshake from this otherwise-sync binary. Minimal multi-thread feature set.
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "macros"] }
+
+[dev-dependencies]
+# Backdating a binding's mtime is the only way to exercise the device
+# store's staleness TTL without sleeping through it.
+filetime = { workspace = true }
+
+[features]
+default = []
+# Links the Sentry SDK. Set only by the release pipeline. Leave it off and
+# `outl_telemetry::init` is a function that returns `None`.
+sentry = ["outl-telemetry/sentry"]

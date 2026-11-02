@@ -1,0 +1,254 @@
+name: TestFlight
+
+# Uploads the signed iOS build to TestFlight. The heavy lifting
+# (Rust + Tauri archive + xcodebuild export) lives in
+# `mobile.yml`'s `ios-release` job, which publishes the signed
+# `.ipa` as the `outl-ios-release` artifact. This workflow only
+# downloads that artifact and runs `xcrun altool --upload-app`,
+# so a TestFlight ship takes ~3 min instead of ~20.
+#
+# Triggers:
+#   - `workflow_run` on the `Mobile` workflow completing successfully.
+#     Mobile already filters by path, so a docs-only push to main
+#     never touches TestFlight.
+#   - `workflow_dispatch` lets a human ship from any past `Mobile`
+#     run by passing its `mobile_run_id` (defaults to the latest
+#     successful run for the current ref).
+#
+# ------------------------------------------------------------------
+# Secrets the workflow expects (Settings → Environments → `release`):
+#
+#   APP_STORE_CONNECT_KEY_ID         e.g. `ABCD1234EF`
+#   APP_STORE_CONNECT_ISSUER_ID      e.g. `69a6de7c-...`
+#   APP_STORE_CONNECT_API_KEY_BASE64 base64 of the `.p8` AuthKey
+#
+# Signing material (cert + provisioning profile) is consumed in
+# `mobile.yml`'s `ios-release` job; it never lands here.
+# ------------------------------------------------------------------
+
+on:
+  workflow_run:
+    workflows: ["Mobile"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      mobile_run_id:
+        description: "Mobile workflow run ID with the IPA artifact (empty = latest successful)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read   # download-artifact reaches into another workflow run
+
+concurrency:
+  # Cancel an in-flight upload when a newer one supersedes it on the
+  # same ref. Two commits to main in quick succession otherwise
+  # produce back-to-back TestFlight builds, each labelled with its
+  # parent commit's release notes — testers see the older build land
+  # last because altool finishes both. With cancel-in-progress: true
+  # the in-flight upload is killed mid-flight (altool returns
+  # non-zero, the upload state on App Store Connect is partial), and
+  # only the freshest mobile run reaches TestFlight. We accept the
+  # half-upload window: a duplicate CFBundleVersion is impossible
+  # because the build number scales with the beta tag (one tag per
+  # release run), and ASC silently rejects re-uploads of the same
+  # version anyway.
+  group: testflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upload:
+    name: Upload IPA to TestFlight
+    runs-on: blacksmith-6vcpu-macos-15
+    # workflow_run fires on every conclusion; only proceed when:
+    #   1. a human triggered us manually (workflow_dispatch), or
+    #   2. the Mobile workflow finished `success` AND was triggered
+    #      by an event that actually runs the `ios-release` job —
+    #      `push` or `workflow_dispatch`. On `pull_request` the
+    #      Mobile workflow's `ios-release` step is skipped (PRs
+    #      never sign IPAs), the workflow still reports `success`,
+    #      and we'd come down here to download an artifact that was
+    #      never uploaded. Mirror the `ios-release` gate from
+    #      `mobile.yml` so we only fire when there's actually a
+    #      signed IPA waiting for us.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       (github.event.workflow_run.event == 'push' ||
+        github.event.workflow_run.event == 'workflow_dispatch'))
+
+    environment:
+      name: release
+      url: https://appstoreconnect.apple.com/apps
+
+    # The App Store Connect IDs are set on each step that reads them
+    # rather than on the job, so no other step inherits them.
+    steps:
+      # Needed for `.github/scripts/testflight_set_whatsnew.py`
+      # invoked later. The script is small and the checkout is cheap
+      # (a few MB), so we always do it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve Mobile run ID
+        id: src
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_RUN_ID: ${{ github.event.inputs.mobile_run_id }}
+        run: |
+          # Three sources of truth, in priority order:
+          #   1. `workflow_dispatch` input (manual override).
+          #   2. `workflow_run.id` (the Mobile run that triggered us).
+          #   3. latest successful Mobile run on the default branch
+          #      (only used when neither of the above is set — keeps
+          #      `gh workflow run testflight.yml` from any ref usable).
+          if [[ -n "${DISPATCH_RUN_ID:-}" ]]; then
+            RUN_ID="$DISPATCH_RUN_ID"
+            echo "::notice::Using mobile_run_id from dispatch input: $RUN_ID"
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            RUN_ID="${{ github.event.workflow_run.id }}"
+            echo "::notice::Using triggering Mobile run: $RUN_ID"
+          else
+            RUN_ID=$(gh run list \
+              --workflow=Mobile \
+              --branch=main \
+              --status=success \
+              --limit=1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+            if [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; then
+              echo "::error::no successful Mobile run on main to ship from"
+              exit 1
+            fi
+            echo "::notice::Falling back to latest successful Mobile run on main: $RUN_ID"
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download IPA artifact from Mobile run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: outl-ios-release
+          path: ipa-bundle
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.src.outputs.run_id }}
+
+      - name: Read build metadata
+        id: meta
+        shell: bash
+        run: |
+          META="ipa-bundle/metadata.env"
+          if [[ ! -f "$META" ]]; then
+            echo "::error::metadata.env not found in artifact"
+            ls -la ipa-bundle/
+            exit 1
+          fi
+          # shellcheck disable=SC1090
+          . "$META"
+          echo "short_version=${short_version}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${build_number}" >> "$GITHUB_OUTPUT"
+          echo "::notice::TestFlight ${short_version} (build ${build_number}) from sha ${head_sha:0:7}"
+
+      - name: Locate IPA
+        id: ipa
+        shell: bash
+        run: |
+          IPA="ipa-bundle/outl.ipa"
+          if [[ ! -f "$IPA" ]]; then
+            FOUND=$(find ipa-bundle -maxdepth 2 -name '*.ipa' | head -1)
+            if [[ -n "$FOUND" ]]; then
+              IPA="$FOUND"
+            else
+              echo "::error::no .ipa in artifact"
+              find ipa-bundle -maxdepth 3 -type f
+              exit 1
+            fi
+          fi
+          echo "path=$IPA" >> "$GITHUB_OUTPUT"
+          ls -lh "$IPA"
+
+      # `altool --upload-app` is the documented App Store Connect
+      # ingestion path. It ships inside Xcode so we need an Xcode
+      # install on the runner (any version works for upload; this
+      # step doesn't compile anything).
+      - name: Select Xcode (for altool)
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: latest-stable
+
+      - name: Install App Store Connect API key
+        env:
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          KEY_DIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEY_DIR"
+          echo -n "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode \
+            -o "$KEY_DIR/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          # `env.HOME` is empty in an expression: the env context only holds
+          # vars set in the workflow, not the runner's HOME. Export the real
+          # path so the whatsNew step reads the key from where it was written.
+          echo "APP_STORE_CONNECT_KEY_PATH=$KEY_DIR/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8" >> "$GITHUB_ENV"
+
+      - name: Upload IPA to TestFlight
+        shell: bash
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          # `xcrun altool --type ios` is known to return exit 0 even on
+          # App Store Connect 4xx (e.g. duplicate CFBundleVersion). Capture
+          # output and fail explicitly when altool logs an ERROR line so a
+          # broken upload doesn't masquerade as a green job.
+          set -o pipefail
+          LOG=$(mktemp)
+          xcrun altool --upload-app \
+            --type ios \
+            --file "${{ steps.ipa.outputs.path }}" \
+            --apiKey "$APP_STORE_CONNECT_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" 2>&1 | tee "$LOG"
+          rc=${PIPESTATUS[0]}
+          if [[ $rc -ne 0 ]]; then
+            echo "::error::altool exited with code $rc"
+            exit "$rc"
+          fi
+          if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+ ERROR:' "$LOG"; then
+            echo "::error::altool reported ERROR despite exit 0 — see log above"
+            exit 1
+          fi
+
+      # Attach the release notes produced by mobile.yml (via
+      # semantic-release) as the TestFlight build's "What to Test"
+      # text. The build needs to materialize in App Store Connect
+      # first — the script polls up to 5min and best-effort skips
+      # on timeout (the upload already succeeded).
+      - name: Install Python deps (App Store Connect API)
+        run: pip3 install --quiet --break-system-packages pyjwt cryptography requests
+
+      - name: Set TestFlight release notes (whatsNew)
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          BUNDLE_ID: app.outl.mobile-app
+          SHORT_VERSION: ${{ steps.meta.outputs.short_version }}
+          BUILD_NUMBER: ${{ steps.meta.outputs.build_number }}
+          NOTES_PATH: ipa-bundle/release-notes.md
+          LOCALE: en-US
+        run: python3 .github/scripts/testflight_set_whatsnew.py
+
+      - name: Re-upload IPA as workflow artifact (audit trail)
+        if: always() && steps.ipa.outputs.path != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: outl-ios-testflight-${{ steps.meta.outputs.short_version }}-${{ steps.meta.outputs.build_number }}
+          path: ${{ steps.ipa.outputs.path }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Cleanup API key
+        if: always()
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          if [[ -n "$APP_STORE_CONNECT_KEY_ID" ]]; then
+            rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          fi

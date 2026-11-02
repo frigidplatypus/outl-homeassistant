@@ -1,0 +1,10 @@
+# Keep the Docker build context small. The build needs the source plus the
+# pre-built frontend bundle (copied into the runtime stage); the heavy
+# artifacts below are produced inside the image or are VCS metadata.
+frontend/node_modules
+vendor/outl/target
+vendor/outl/.git
+**/.git
+.git
+*.log
+.DS_Store

@@ -1,0 +1,123 @@
+<p align="center">
+  <img src="assets/logo.png" alt="outl" width="160" height="160" />
+</p>
+
+<h1 align="center">outl</h1>
+
+<p align="center">
+  <a href="https://discord.gg/dnfAbCYWv">
+    <img alt="Discord" src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white" />
+  </a>
+</p>
+
+<p align="center">
+  Local-first outliner. Markdown is the source of truth. Sync that
+  doesn't corrupt your tree when two devices edit offline.
+</p>
+
+<p align="center">
+  <img src="assets/readme/tui.gif" alt="outl TUI: mentioning @Priya Shah in today's journal, then opening her page with the new backlink" width="820" />
+</p>
+
+<p align="center">
+  <img src="assets/readme/desktop-journal.png" alt="outl desktop, today's journal" width="410" />
+  <img src="assets/readme/desktop-person.png" alt="outl desktop, a person page with its backlinks (dark)" width="410" />
+  <img src="assets/readme/mobile-journal.png" alt="outl on iPhone, today's journal" width="180" />
+</p>
+
+Inspired by [Roam Research](https://roamresearch.com) and [Logseq](https://logseq.com).
+Tree CRDT sync ([Kleppmann et al. 2022][paper]), per-device append-only op log, IDs in a sidecar so the `.md` you see is the `.md` you wrote.
+
+- **Why outl?** → [outl.app/docs/why-outl.html](https://outl.app/docs/why-outl.html)
+- **Sync, done right:** → [outl.app/docs/sync.html](https://outl.app/docs/sync.html)
+- **CRDT walkthrough:** → [outl.app/docs/crdt.html](https://outl.app/docs/crdt.html)
+
+[paper]: https://martin.kleppmann.com/papers/move-op.pdf
+
+## Install
+
+```bash
+# macOS / Linux via Homebrew (beta channel — every push to main)
+brew tap outlmd/outl https://github.com/outlmd/outl
+brew trust outlmd/outl # one-time, third-party tap
+brew install outlmd/outl/outl-beta # TUI/CLI/MCP
+brew install --cask outl-desktop-beta # GUI
+```
+
+```powershell
+# Windows via Scoop
+scoop bucket add outl https://github.com/outlmd/outl
+scoop install outl/outl-beta # TUI/CLI/MCP
+```
+
+Desktop app on Linux and Windows: AppImage / `.deb` / `.rpm` and an NSIS installer on every [release](https://github.com/outlmd/outl/releases), for `x86_64` and `aarch64` both.
+
+iOS beta on TestFlight: [join here](https://testflight.apple.com/join/P2GdWAMd). Point the TUI at the same iCloud Drive container _(`<container>/Documents/`)_ and both clients share a workspace.
+
+Android: a signed arm64 APK (`outl-android-arm64.apk`) rides every [release](https://github.com/outlmd/outl/releases).
+Sideload-only for now — not on Play, and each release is signed with a fresh key, so a new build means uninstalling the old one first ([#171](https://github.com/outlmd/outl/issues/171)).
+
+- **From source / channels:** → [getting started](https://outl.app/docs/getting-started.html), [homebrew](https://outl.app/docs/homebrew.html)
+
+## Quick start
+
+```bash
+outl init ~/notes              # scaffold a workspace
+outl --workspace ~/notes       # opens the TUI on today's journal
+```
+
+Press `?` for keymap, `:` for the command palette, `Ctrl+P` to fuzzy-jump.
+
+- [Tutorial (15 min)](https://outl.app/docs/tutorial.html)
+- [TUI manual](https://outl.app/docs/tui.html)
+- [CLI reference](https://outl.app/docs/cli.html)
+- [Markdown dialect](https://outl.app/docs/markdown-format.html)
+- [Shortcuts](https://outl.app/docs/shortcuts.html)
+
+## Optional: an always-on peer
+
+**You don't need a server.** Pair your laptop and your phone and they sync directly, P2P. That's the normal setup.
+
+But P2P converges only when two devices can reach each other, and a laptop shut at 18:00 never overlaps a phone edited at 22:00.
+If that's you, a third device that never sleeps closes the gap — on hardware you own.
+
+```bash
+docker compose build
+outl peer pair --name laptop                                  # on a device that HAS your notes
+docker compose run --rm outl peer pair --ticket <ticket>      # the server joins
+docker compose up -d
+```
+
+Not a server your notes sync *through* — no account, no upload, nobody else's infrastructure holding your graph.
+Just one more peer that happens to be awake all the time, holding a full replica of the op log.
+Turn it off and your other devices carry on talking to each other.
+[Self-hosting guide](https://outl.app/docs/self-hosting.html).
+
+## Coming from Logseq or Roam?
+
+```bash
+outl import logseq ~/path/to/logseq-graph ~/notes
+outl import roam ~/Downloads/backup.json ~/notes
+```
+
+The importers (Roam, Logseq, Obsidian — or `auto` to detect) resolve `((uid))` block refs and `{{embed}}`s into real outl block references, keep folded state, and translate each dialect.
+Everything touched is counted in the import report — run with `--dry-run` first to measure fidelity against your backup.
+Anything unresolvable stays as `((unresolved:UID))` for manual triage.
+
+## Contributing
+
+- [Developer setup](https://outl.app/docs/development.html)
+- [Contributing guide](https://outl.app/docs/contributing.html)
+- [Architecture](https://outl.app/docs/architecture.html)
+- [Roadmap](https://github.com/users/avelino/projects/2/views/1) — where the project is going
+
+## Background reading
+
+The engineering decisions behind outl on [avelino.run](https://avelino.run):
+
+- **[File sync isn't trivial](https://avelino.run/file-sync-isnt-trivial/)** — why concurrent file moves are a distributed-systems problem that Dropbox and Google Drive still get wrong.
+- **[From paper to outliner](https://avelino.run/from-paper-to-outliner/)** — the gap between "the CRDT converges" and "the app ships": projections, content-addressable reconciliation, surviving iCloud's lazy materialisation.
+
+## License
+
+[MIT](LICENSE).

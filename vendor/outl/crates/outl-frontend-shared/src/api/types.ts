@@ -1,0 +1,674 @@
+/**
+ * DTOs returned by the Rust backend over the Tauri bridge.
+ *
+ * Every shape here mirrors a `serde`-serialized Rust type. Adding a
+ * field on the Rust side means extending the interface here in the
+ * same change — backend and frontend share the wire format, never
+ * a generator.
+ */
+
+import type { TableView } from "./table";
+import type { InlineToken } from "./tokens";
+
+/**
+ * Palette returned by `get_theme`. Mirrors `outl_theme::Palette`
+ * field-for-field — every value is a `#rrggbb` (or `#rrggbbaa`)
+ * string that `applyPaletteToRoot` (`@outl/shared/theme`) writes as
+ * a CSS custom property. Every GUI client (`outl-desktop`,
+ * `outl-mobile`) registers the same `get_theme` / `list_themes`
+ * commands and shares this one wire type (RFC 0022).
+ */
+export interface Palette {
+  name: string;
+  bg: string;
+  bg_elev: string;
+  fg: string;
+  fg_dim: string;
+  fg_dimmer: string;
+  border: string;
+  hint: string;
+  accent: string;
+  accent_fg: string;
+  accent_soft: string;
+  accent_alt: string;
+  warn: string;
+  destructive: string;
+  destructive_fg: string;
+  ref_link_fg: string;
+  tag_link_fg: string;
+  md_link_fg: string;
+  bold_fg: string;
+  italic_fg: string;
+  strike_fg: string;
+  highlight_bg: string;
+  highlight_fg: string;
+  code_fg: string;
+  todo_open_fg: string;
+  todo_done_fg: string;
+  todo_done_body_fg: string;
+  property_key_fg: string;
+  property_value_fg: string;
+  heading_fg: string;
+  dim_fg: string;
+  selected_bullet_bg: string;
+  selected_bullet_fg: string;
+  cursor_block_bg: string;
+  cursor_block_fg: string;
+  cursor_caret_fg: string;
+  status_normal_bg: string;
+  status_normal_fg: string;
+  status_insert_bg: string;
+  status_insert_fg: string;
+  status_visual_bg: string;
+  status_visual_fg: string;
+  status_message_fg: string;
+  list_selected_bg: string;
+  list_selected_fg: string;
+  help_title_fg: string;
+}
+
+/**
+ * The `[theme]` section resolved for a client, from `get_theme_config`.
+ * Mirrors `outl_tauri_shared::commands::theme::ThemeConfigDto`.
+ *
+ * `preset_dark` is **already resolved** through `ThemeCfg::dark()` on
+ * the Rust side — never empty, and never a value to fall back from.
+ * A config that only ever set `preset` comes back with `preset_dark`
+ * equal to `preset` (RFC 0022's backwards-compatibility guarantee);
+ * treat that as correct, not as a signal to re-derive a fallback here.
+ */
+export interface ThemeConfig {
+  preset: string;
+  preset_dark: string;
+  mode: "light" | "dark" | "auto";
+}
+
+/**
+ * One entry of the workspace's property-key catalogue: the key as most
+ * of its uses spell it, and how many properties use it.
+ *
+ * Mirrors `outl_tauri_shared::commands::property::PropertyKey`. Lives
+ * here rather than per client because both GUI clients register the
+ * same `known_property_keys` command and ask it the same question when
+ * the user adds a property; two copies of a wire type is how they end
+ * up disagreeing about a field.
+ */
+export interface PropertyKey {
+  key: string;
+  uses: number;
+}
+
+/**
+ * One change to one block, out of the op log.
+ *
+ * Mirrors `outl_tauri_shared::commands::timeline::TimelineEventDto`.
+ * `change` says which of the optional fields are meaningful: `edited`
+ * uses `from`/`to`, `deleted` uses `text`, `property` uses `key` plus
+ * `from`/`to`, and the rest use none. This is a flat interface, not a
+ * discriminated union, so TypeScript will not narrow them for you —
+ * reading `event.text` on a `created` event compiles and gives `null`.
+ */
+export interface TimelineEvent {
+  at_ms: number;
+  actor: string;
+  block: string;
+  block_deleted: boolean;
+  change: "created" | "edited" | "deleted" | "restored" | "moved" | "property";
+  from: string | null;
+  to: string | null;
+  text: string | null;
+  key: string | null;
+}
+
+/**
+ * A page's history, newest first.
+ *
+ * `total` is the count **before** the limit, never `events.length` — a
+ * capped list that reports its own length as the total reads as the
+ * whole history, which is the one thing a history must not do.
+ */
+export interface PageTimeline {
+  slug: string;
+  total: number;
+  truncated: boolean;
+  events: TimelineEvent[];
+}
+
+export type TodoState = "TODO" | "DOING" | "DONE";
+export type PageKind = "page" | "journal";
+/** Direction of the backlinks ("Linked from") list (issue #142).
+ * Mirrors `outl_config::BacklinksOrder`. */
+export type BacklinksOrder = "newest" | "oldest";
+
+// Re-exported, not declared: these moved to `./tokens` and `./table`
+// (shared dependencies rather than page DTOs), and the catalog names
+// `@outl/shared/api/types` as their entry point. The `import`s above are
+// what bring the names into *this* file's scope — a re-export does not.
+export type { InlineToken } from "./tokens";
+export type { ColumnAlign, TableView } from "./table";
+
+export interface BlockNode {
+  id: string;
+  text: string;
+  todo: TodoState | null;
+  /**
+   * Inline markdown tokens for `text` (no TODO/DONE prefix). Backend
+   * pre-tokenizes via `outl_md::tokenize_owned` so the renderer
+   * doesn't run a second tokenizer in JS. See {@link InlineToken}.
+   */
+  tokens: InlineToken[];
+  /**
+   * UI fold state overlaid from the backend's op log. `true` means
+   * the children are hidden in the outline. Mutated via
+   * {@link import("./commands").setBlockCollapsed}, which generates
+   * `Op::SetCollapsed` and appends it to the device's
+   * `ops-<actor>.jsonl`; iCloud / Syncthing propagate the per-actor
+   * file and every peer's CRDT replays the op in HLC order. The
+   * sidecar is never written for this flag.
+   */
+  collapsed: boolean;
+  /**
+   * `(key, value)` block properties — the `key:: value` lines a user
+   * authored under the block in markdown. Empty when the block has
+   * none. Backend builds this from `Op::SetProp` entries so it
+   * survives the same way collapsed does (op log, not sidecar).
+   */
+  properties: Array<[string, string]>;
+  /**
+   * Present when the block's **whole** text is a markdown table (see
+   * `./table`). A client that ignores it falls back to
+   * {@link BlockNode.tokens} and shows the pipe rows verbatim. Mirrors
+   * `outl_actions::OutlineNode.table`.
+   */
+  table?: TableView;
+  children: BlockNode[];
+}
+
+/** A block resolved from its ref handle (`blk-XXXXXX`) — reply shape of
+ *  `resolveEmbeds`. Serves both surfaces the handle appears in:
+ *  `((…))` inline refs render `text`; `!((…))` embeds render `text` plus
+ *  the `children` subtree. Mirrors the Rust `EmbedContent`. */
+export interface ResolvedBlock {
+  handle: string;
+  text: string;
+  page_slug: string;
+  status: string | null;
+  children: BlockNode[];
+}
+
+export interface PageMeta {
+  id: string;
+  slug: string;
+  title: string;
+  kind: PageKind;
+  /**
+   * Optional emoji / icon string the user set on the page via the
+   * `icon::` page property. Backend omits the field when unset; the
+   * frontend can fall back to `📄`/`📅` based on `kind`.
+   */
+  icon?: string;
+  /**
+   * `pinned:: true` page-level property. Sidebars surface pinned
+   * pages prominently (canonical entry points like "inbox" or
+   * "weekly review"). Defaults to `false`; backend serialises the
+   * field only when `true` so an older binary reading a newer wire
+   * still parses cleanly.
+   */
+  pinned?: boolean;
+  /**
+   * `type::` page-level property, lowercased+trimmed. `null`/omitted
+   * when unset. The `@` mention autocomplete filters to
+   * `page_type === "person"` candidates without re-querying the
+   * workspace index. Mirrors `outl_actions::PageMeta.page_type` and
+   * `outl_md::index::PageEntry.page_type`.
+   */
+  page_type?: string | null;
+  /** `alias::` — alternative names matched beside the title; omitted when unset. Mirrors `outl_actions::PageMeta.aliases`. */
+  aliases?: string[];
+}
+
+/**
+ * One ancestor step in a backlink's breadcrumb. Plain text only — the
+ * breadcrumb is dimmed context, so clients render a muted trail rather
+ * than re-rendering inline markdown the way they do for the citing
+ * block. `text` already has the `TODO `/`DONE ` prefix stripped. Mirrors
+ * `outl_actions::BacklinkCrumb`. (Same shape as `FocusCrumb` from
+ * `@outl/shared/outline`, but a distinct concept — zoom vs. backlink.)
+ */
+export interface BacklinkCrumb {
+  id: string;
+  text: string;
+}
+
+export interface Backlink {
+  block_id: string;
+  todo: TodoState | null;
+  source_page: PageMeta | null;
+  /**
+   * Ancestor blocks between the source page root and the citing block,
+   * **root-first**: `ancestors[0]` is the direct child of the page
+   * root, the last entry is the block's immediate parent. Empty when
+   * the block sits at page-root level. The page root itself is not
+   * included — clients show it as the group header. Mirrors
+   * `outl_actions::Backlink::ancestors`.
+   */
+  ancestors: BacklinkCrumb[];
+  /**
+   * Source block as a self-contained outline subtree (text, tokens,
+   * children, properties). Mirrors what `read_page_view_with_workspace`
+   * would return for the same block. Clients read
+   * `source_block.tokens` for the inline markdown; the raw text
+   * lives at `source_block.text` if a caller ever needs it.
+   *
+   * Note: the Rust `Backlink` struct also carries `block_text` for
+   * the CLI/MCP JSON envelope. It's intentionally omitted from this
+   * TS interface because no client reads it — Tauri still ships the
+   * field over the wire; JS just ignores it.
+   */
+  source_block: BlockNode;
+  /**
+   * DFS path of the source block inside `source_page`. Empty array
+   * means the block is a direct child of the page root. Mirrors
+   * `outl_actions::Backlink::source_block_path` — used by clients
+   * that navigate inside a backlink's subtree.
+   */
+  source_block_path: number[];
+  /**
+   * On-disk path of `source_page`'s `.md` (inside the workspace
+   * storage root — iCloud container on mobile, user-picked path on
+   * desktop). Backend omits the field when the source block has no
+   * enclosing page (legacy data).
+   */
+  source_path?: string;
+}
+
+export interface PageView {
+  page: PageMeta;
+  outline: BlockNode[];
+  /**
+   * **Always empty from the open commands now.** Backlinks moved off the
+   * page-open path (`backlinks_for_page` is an O(blocks-in-workspace)
+   * scan that used to block the first journal paint on a large
+   * workspace). Fetch them lazily with {@link PageBacklinks} via
+   * `pageBacklinks(slug)` after the outline renders — the same lazy
+   * policy the TUI uses. Kept in the wire shape for back-compat.
+   */
+  backlinks: Backlink[];
+  /** Direction `backlinks` was sorted in (issue #142) — `"newest"` or
+   * `"oldest"`. Lets a client's direction toggle show the right arrow
+   * without a separate settings read. Mirrors `PageView.backlinks_order`. */
+  backlinks_order: BacklinksOrder;
+  /**
+   * The page's own `key:: value` properties (`icon::`, `type::`, …),
+   * alpha-sorted, with the structural keys (`page-slug`, `page-kind`)
+   * already filtered out by the backend. Same shape as
+   * {@link BlockNode.properties}, so one editor serves both.
+   *
+   * Optional on the wire only for back-compat with an older binary;
+   * a current backend always sends it (empty array when the page has
+   * no properties). Mirrors `PageView.page_properties`.
+   */
+  page_properties?: Array<[string, string]>;
+  /**
+   * Parser recovery records for the page's `.md`. Empty (or
+   * absent) when the file is fully in the outl dialect. Drives
+   * the `<ParseWarningsBanner />` above the outline so the user
+   * knows outl had to keep lines that don't match the dialect
+   * (e.g. a leading `# heading`, a stray paragraph, imported
+   * markdown). Mirrors `outl_md::ParseWarning` exactly.
+   */
+  warnings?: ParseWarning[];
+  /**
+   * Present when this page stopped syncing because its `.md` holds
+   * content that exists in no op, so outl refuses to overwrite the file
+   * (root `CLAUDE.md` invariant 8). Absent on every healthy page.
+   *
+   * Drives the `<PageAheadOfLogBanner />` above the outline. Rendering
+   * nothing here is what the state used to do — the refusal died in a
+   * backend log line and the page just quietly stopped updating.
+   * Mirrors `outl_tauri_shared::state::MdAheadOfLog`.
+   */
+  md_ahead_of_log?: MdAheadOfLog;
+  /**
+   * `true` when this reply actually ran the check, so
+   * {@link PageView.md_ahead_of_log} is authoritative **in both
+   * directions**: absent then means the page is healthy again, and the
+   * banner must clear.
+   *
+   * Only the open commands run it. A mutation reply is built from the
+   * tree and can never carry the notice, which is why a client keeps the
+   * banner across those (clearing it there would drop the warning on the
+   * user's first edit — the very action it warns against). This bit is
+   * what tells the client when clearing *is* correct, e.g. right after
+   * `outl reconcile --ahead-of-log` fixed the page.
+   *
+   * Mirrors `outl_tauri_shared::state::PageView.md_ahead_of_log_checked`.
+   */
+  md_ahead_of_log_checked?: boolean;
+  /** Non-refusal projection failure after this mutation already committed. */
+  projection_error?: string;
+}
+
+/**
+ * Why a page stopped syncing.
+ *
+ * outl will not re-project a `.md` that holds lines the op log never
+ * recorded, because that write deletes them for good. The cost of
+ * refusing is that the page is frozen in both directions until
+ * `outl reconcile --ahead-of-log` runs: those lines never reach another
+ * device, and a peer's edits never reach this file.
+ *
+ * Mirrors `outl_tauri_shared::state::MdAheadOfLog`.
+ */
+export interface MdAheadOfLog {
+  /** Absolute path of the `.md` that was left alone. */
+  path: string;
+  /** How many content lines exist only on this device. */
+  lines: number;
+  /** One of those lines, already quoted by the backend. */
+  sample: string;
+}
+
+/** A projection failure reported after its mutation already committed. */
+export interface ProjectionWriteFailed {
+  page_id: string;
+  md_ahead_of_log?: MdAheadOfLog;
+  error: string;
+}
+
+/**
+ * Reply from `pageBacklinks(slug)` and `setBacklinksOrder(...)`.
+ *
+ * Backlinks are fetched lazily, decoupled from {@link PageView}, so the
+ * O(blocks-in-workspace) `backlinks_for_page` scan never blocks the
+ * journal appearing. Mirrors the Rust `BacklinksReply`.
+ */
+export interface PageBacklinks {
+  backlinks: Backlink[];
+  backlinks_order: BacklinksOrder;
+  /**
+   * Blocks that reached this page only through a descendant —
+   * `#os/linux` arriving at `os` (issue #275). **Capped** server-side;
+   * `namespace_backlinks_total` is the real count, so a client can say
+   * "showing 50 of 3,221" instead of implying the list is complete.
+   *
+   * Its own field rather than mixed into `backlinks` because the set
+   * has no natural size: on a real workspace `buser` names 448 sources
+   * and collects 3,221 more this way. Render it as a collapsed section.
+   */
+  namespace_backlinks: Backlink[];
+  /** Blocks reaching this page through a descendant, before the cap. */
+  namespace_backlinks_total: number;
+  /**
+   * Pages nested under this one's namespace — `os` gets `os/linux` and
+   * `os/linux/debian` (issue #275). Title-sorted, every level, each row
+   * carrying its `depth` so no client splits a title on `/` itself.
+   */
+  namespace_children: NamespaceChild[];
+}
+
+/**
+ * One page nested under another's namespace. The hierarchy is derived
+ * from the page **title**, never the slug (`os/linux` slugifies to the
+ * single path component `os-linux`, since a slug is joined into
+ * `pages/<slug>.md`). Mirrors the Rust `outl_actions::NamespaceChild`.
+ */
+export interface NamespaceChild {
+  page: PageMeta;
+  /** Levels below the namespace root. A direct child is `1`. */
+  depth: number;
+  /** Trailing segment — the row label (`debian`, not `os/linux/debian`). */
+  label: string;
+}
+
+/**
+ * Reason a parser warning was emitted.
+ *
+ * Mirrors `outl_md::ParseWarningKind`, serialised as snake_case strings.
+ * Two families, and a reader should not treat them as one:
+ *
+ * - `unrecognized_block_marker` — a line the outl dialect does not
+ *   model (a `# heading`, a stray paragraph, a table). outl kept it
+ *   verbatim so an edit-and-save cannot drop it.
+ * - `remind_*` — a `remind::` rule the scheduler could not take at face
+ *   value. The block is fine; the *rule* is malformed, and either did
+ *   not schedule or scheduled differently than written.
+ *
+ * The five `remind_*` members are not new: they shipped with the
+ * reminder parser and were simply never mirrored here, which is what
+ * `wire_enums.rs`'s `parse_warning_kind_matches_its_union` now makes
+ * impossible.
+ */
+export type ParseWarningKind =
+  /** A line outside the outl dialect, preserved verbatim. */
+  | "unrecognized_block_marker"
+  /** `remind:: every 1h` — a repeat with nothing to repeat from. */
+  | "remind_missing_anchor"
+  /** `remind:: 25:00` — not a wall-clock time this dialect recognises. */
+  | "remind_invalid_time"
+  /** `remind:: 10am every 30s` — below the 1min floor, or a bad unit. */
+  | "remind_invalid_interval"
+  /** `remind:: 10am until yesterday` — unusable stop clause, dropped. */
+  | "remind_invalid_stop"
+  /** `remind:: 10am max 50` — clamped down to the 10-fire ceiling. */
+  | "remind_max_clamped";
+
+/**
+ * One non-fatal parser recovery. Carries the **1-based** source
+ * line number and the raw line text, so a UI can highlight the
+ * offending row without re-scanning the file.
+ *
+ * Mirrors `outl_md::ParseWarning` (`crates/outl-md/src/parse.rs`).
+ * See `docs/markdown-format.md` § "Permissive parsing & warnings"
+ * for the user-facing contract.
+ */
+export interface ParseWarning {
+  line: number;
+  raw: string;
+  kind: ParseWarningKind;
+}
+
+/**
+ * Reply of {@link import("./commands").createBlock}. Pairs the
+ * refreshed {@link PageView} with the id of the freshly-inserted
+ * block so the client can focus / put the new row into edit mode
+ * without re-discovering the id by diffing the outline.
+ *
+ * Why the new id is on the wire: the previous design returned only
+ * the `PageView` and let the frontend find the new block via a DFS
+ * walk (`flat[idx+1]` after the anchor). That walk lands on the
+ * anchor's *first child* whenever the anchor has children, not on
+ * the new sibling. The eventual `editBlock(stale_id, ...)` then
+ * targeted an id that may have been moved or already replaced, and
+ * the backend surfaced `block <ULID> is not in the tree` as a toast.
+ */
+export interface CreateBlockReply {
+  view: PageView;
+  new_id: string;
+}
+
+/**
+ * Reply of `cutBlock` (RFC 0254 phase 4). `markdown` is the cut
+ * block's subtree, rendered *before* the delete — the same shape
+ * `copyBlockMarkdown` produces, so it drops straight into the block
+ * clipboard `pasteBlockAfter` already reads. `view` is the page with
+ * the block already moved to trash (`Op::Move`, root `CLAUDE.md`
+ * invariant 6 — never a physical removal). Mirrors the Rust
+ * `outl_tauri_shared::state::CutBlockReply`.
+ */
+export interface CutBlockReply {
+  markdown: string;
+  view: PageView;
+}
+
+/**
+ * Successful execution payload of `runCodeBlock`. Mirrors the Rust
+ * `ExecOutputDto` (which itself is a serialisable view of
+ * `outl_exec::ExecOutput`). `duration_ms` is the wall-clock runtime
+ * across the runtime call; `exit` is the stringified Rust
+ * `ExitStatus` (`"Ok"`, `"NonZero(1)"`, `"Trap(\"…\")"`).
+ */
+export interface ExecOutputDto {
+  stdout: string;
+  stderr: string;
+  duration_ms: number;
+  exit: string;
+}
+
+/**
+ * Reply of {@link import("./commands").runCodeBlock}. `outl-exec`
+ * writes the `> **result:**` sibling subblock and reconciles with
+ * the op log before the command returns, so `view` is the refreshed
+ * outline the caller should swap straight in — no follow-up
+ * `openPage…` round-trip needed.
+ *
+ * - `result_ok` is populated when the runtime ran (stdout / stderr
+ *   captured, exit available).
+ * - `error` is populated on infrastructure failure (unknown
+ *   language, timeout, sandbox crash). Mutually exclusive with
+ *   `result_ok`.
+ */
+export interface RunCodeBlockReply {
+  language: string;
+  result_ok: ExecOutputDto | null;
+  error: string | null;
+  view: PageView;
+}
+
+// ── Peers and sync progress ─────────────────────────────────────────
+// These live in the sibling `./peers` module and are re-exported here,
+// so `@outl/shared/api/types` stays the one import path every client
+// already uses. The split is a size boundary, not a contract boundary.
+export type { PeerDto, PeerStatusDto, SyncProgress } from "./peers";
+
+export interface WorkspaceSummary {
+  blocks: number;
+  ops: number;
+  actor: string;
+  storage_root: string;
+  /**
+   * `true` when a workspace is currently loaded (mobile: iCloud
+   * container available; desktop: user picked a directory). `false`
+   * while the picker is still up (desktop) or the background opener
+   * is in flight (both). Older mobile builds always sent `true`; the
+   * field is `boolean | undefined` semantically — treat missing as
+   * `true` when targeting an old binary, or use `?? true` if you
+   * need a safe default.
+   */
+  ready: boolean;
+  /**
+   * Whether `ops` is the whole log. `false` after a snapshot boot, when
+   * the count covers only the delta replayed above the cutoff — on a real
+   * workspace that is 332 against 228,943, so a client that renders `ops`
+   * must say which of the two it is showing. `outl workspace info` prints
+   * the same verdict as `ops_complete`.
+   *
+   * Older binaries did not send it, so treat a missing value as `true`:
+   * compare against `false`, never fall back to `false`.
+   */
+  ops_complete: boolean;
+}
+
+// ── Plugins ─────────────────────────────────────────────────────────
+// The plugin wire shapes live in the sibling `./plugins` module and are
+// re-exported here, so `@outl/shared/api/types` stays the one import
+// path every client already uses. The split is a size boundary, not a
+// contract boundary.
+export type {
+  PluginCommand,
+  PluginFieldKind,
+  PluginRunReply,
+  PluginSettingsField,
+  PluginSyncHooksReply,
+  PluginToolbarButton,
+  PluginTransformResult,
+  PluginTransformer,
+  RegistryItem,
+} from "./plugins";
+
+/**
+ * One structural template surfaced by {@link import("./commands").listTemplates}.
+ * Mirrors `outl_tauri_shared::state::TemplateDto`. A template is any page
+ * with a non-empty `template::` property; its outline is the body
+ * deep-copied under a target block by
+ * {@link import("./commands").instantiateTemplateAt}.
+ */
+export interface TemplateDto {
+  /** Invocation name (the page's `template::` property value). */
+  name: string;
+  /** Slug of the page that defines the template. */
+  slug: string;
+  /**
+   * `true` when another page shares this `template:: <name>`; the picker
+   * can flag it since resolution silently picks the first in tree order.
+   * Omitted from the wire (defaults to `false`) when not a duplicate.
+   */
+  duplicate?: boolean;
+}
+
+/**
+ * One scheduled `remind::` rule. Mirrors
+ * `outl_tauri_shared::commands::reminders::ReminderDto`.
+ *
+ * `nextFire` / `snoozedUntil` are ISO-8601 **local** strings
+ * (`2026-12-12T15:00:00`) with no zone suffix — deliberately. The
+ * backend already resolved them in the user's configured timezone
+ * (`outl_actions::clock`); re-deriving a local time from an epoch in
+ * JS would reintroduce the timezone bug that module exists to fix.
+ * Render them as-is, or parse with `new Date(iso)` which treats a
+ * suffix-less string as local.
+ */
+/**
+ * How late a reminder is. Mirrors `outl_actions::reminders::Urgency`
+ * and is computed in Rust, so the TUI, the desktop panel and the
+ * mobile sheet paint the same row the same way.
+ */
+export type ReminderUrgency = "overdue" | "soon" | "later" | "finished";
+
+/** One snooze option. Mirrors `SnoozePresetDto`. */
+export interface SnoozePreset {
+  /** Wire id sent back to `snoozeReminder`. */
+  id: string;
+  /** What the button reads. */
+  label: string;
+}
+
+export interface Reminder {
+  block_id: string;
+  page_slug: string;
+  page_title: string;
+  /** Block body, TODO/DONE prefix already stripped. */
+  text: string;
+  /** The rule verbatim, e.g. `"3pm every 1h until DONE"`. */
+  rule: string;
+  /** `YYYY-MM-DD` the rule is anchored to. */
+  anchor_date: string;
+  /** The block is DONE — listed for context, never fires again. */
+  done: boolean;
+  /** Local ISO datetime of the next fire, `null` when finished. */
+  next_fire: string | null;
+  /** Local ISO datetime the snooze runs until, `null` when not snoozed. */
+  snoozed_until: string | null;
+  /** Row styling class, decided by the backend. */
+  urgency: ReminderUrgency;
+}
+
+/**
+ * This device's reminder delivery preferences. Mirrors
+ * `outl_tauri_shared::commands::reminders::ReminderSettingsDto`.
+ *
+ * Device-local by design: quiet hours are a property of *this* phone
+ * or laptop, not of the workspace, so they never travel through the op
+ * log (unlike the rule itself and a snooze, which do).
+ */
+export interface ReminderSettings {
+  enabled: boolean;
+  /** `"22:00-07:00"`, or `""` when the user set no quiet hours. */
+  quiet_hours: string;
+}
+
+/**
+ * Property key carrying a reminder rule on a block. Mirrors
+ * `outl_md::REMIND_KEY` — don't hardcode `"remind"` at a call site.
+ */
+export const REMIND_KEY = "remind";

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- maximum-scale + user-scalable=no were removed: blocking zoom
+         violates WCAG 1.4.4 / Apple HIG accessibility guidance, and
+         iOS Safari already suppresses focus-zoom on inputs whose
+         font-size is >= 16px (body is 17px, see styles.css). -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <!-- Status bar / browser chrome adapt to the OS color scheme.
+         Dark: brand purple #0c0814 + white text. Light: paper white
+         #ffffff + dark text. Safari iOS honors the `media` attribute
+         on both `theme-color` and the apple status-bar meta. -->
+    <meta name="theme-color" content="#0c0814" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/logo-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>outl</title>
+    <style>
+      /*
+       * Boot paint. iOS hands off from LaunchScreen to the Tauri
+       * WebView; the WebView's default canvas is white, which flashed
+       * before Tailwind hydrated. We paint paper white in light
+       * mode and brand dark in dark mode so the LaunchScreen and the
+       * first HTML frame look identical regardless of system theme.
+       * Tailwind / theme tokens take over right after.
+       */
+      html,
+      body,
+      #root {
+        margin: 0;
+        background: #ffffff;
+      }
+      @media (prefers-color-scheme: dark) {
+        html,
+        body,
+        #root {
+          background: #0c0814;
+        }
+      }
+
+      /*
+       * Static splash. Lives outside #root so Solid's mount never
+       * touches it. Auto fade-out via CSS — no JS needed, no
+       * hydration race. After the animation finishes it is
+       * display:none so it never intercepts touches.
+       */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #ffffff;
+        animation: boot-splash-out 240ms cubic-bezier(0.4, 0, 0.2, 1) 380ms
+          forwards;
+      }
+      @media (prefers-color-scheme: dark) {
+        #boot-splash {
+          background: #0c0814;
+        }
+      }
+      #boot-splash img {
+        width: 128px;
+        height: 128px;
+        filter: drop-shadow(0 8px 32px rgba(167, 139, 250, 0.35));
+        animation: boot-splash-img 240ms cubic-bezier(0.4, 0, 0.2, 1) 380ms
+          forwards;
+      }
+      @keyframes boot-splash-out {
+        to {
+          opacity: 0;
+          visibility: hidden;
+        }
+      }
+      @keyframes boot-splash-img {
+        to {
+          transform: scale(0.96);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+    <div id="boot-splash" aria-hidden="true">
+      <img src="/logo.png" alt="" width="128" height="128" />
+    </div>
+    <script src="/src/index.tsx" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,48 @@
+[package]
+name = "outl-tauri-shared"
+description = "Shared Tauri backend surface (state DTOs, helpers, command bodies, plugin service) for the outl desktop and mobile clients."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[dependencies]
+outl-core = { workspace = true }
+outl-md = { workspace = true }
+outl-actions = { workspace = true }
+outl-config = { workspace = true }
+# Feature-less on purpose (same rule as outl-actions): the client binary
+# selects the language runtimes it ships; a default-features dep here would
+# smuggle wasmtime into the mobile IPA via Cargo feature unification.
+outl-exec = { workspace = true }
+outl-plugins = { workspace = true, features = ["registry"] }
+outl-shortcuts = { workspace = true }
+outl-sync-iroh = { workspace = true }
+outl-theme = { workspace = true }
+
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+ulid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+walkdir = "2"
+# Opens an asset in the OS default app (Preview, image viewer). Same
+# crate + version the TUI uses in `actions/exec.rs`.
+open = "5"
+# Decode the iOS document picker's `file://` percent-encoded paths (already
+# in the tree via tauri). Beats a hand-rolled `%XX` decoder on untrusted input.
+percent-encoding = "2"
+# Encode asset bytes into a `data:` URL the webview loads inline (image /
+# pdf render). Already in the dep tree via outl-sync-iroh; pinned to the
+# same 0.22 line it uses.
+base64 = "0.23"
+
+[dev-dependencies]
+tempfile = { workspace = true }

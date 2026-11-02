@@ -1,0 +1,138 @@
+[package]
+name = "outl-mobile"
+description = "Mobile companion app for outl (Tauri 2 + Solid)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+name = "outl_mobile_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# `android_globals.rs` reads this manifest back to check that `ndk-context`
+# has not returned as a direct dependency. Parsed, not grepped, for the reason
+# `outl-telemetry`'s own manifest test gives: a textual check passes against
+# the same dependency written with different spacing.
+toml = { workspace = true }
+
+[dependencies]
+outl-core = { workspace = true }
+outl-md = { workspace = true }
+outl-actions = { workspace = true }
+# JS plugin host (Boa). Default feature `js` (the only runtime that ships on
+# iOS — no JIT, interpreted) compiles fine here. The host is `!Send` (embeds a
+# Boa `Context`), so it runs on a dedicated thread behind `PluginService` —
+# never in the `Send + Sync` `AppState`. See `plugin_service.rs`.
+outl-plugins = { workspace = true, features = ["registry"] }
+outl-sync-iroh = { workspace = true }
+outl-tauri-shared = { workspace = true }
+outl-config = { workspace = true }
+outl-theme = { workspace = true }
+# Crash reporting (RFC 0377). The dependency is unconditional; the *reporter*
+# is not. `outl-telemetry`'s own `sentry` feature is what links the SDK, and it
+# is off by default, so a build nobody passed `--features sentry` to contains
+# no reporter to switch on — that is condition 1, and it is why someone who
+# clones this repo and runs it has no Sentry in the binary at all.
+outl-telemetry = { workspace = true }
+# Was only a transitive dep (via outl-plugins / outl-tauri-shared) — declared
+# directly so mobile's own build checks its capability-parity column instead
+# of inheriting a declaration made on its behalf. See RFC 0253 and
+# `capability_parity::mobile_capability_column_is_backed_by_real_commands`.
+outl-shortcuts = { workspace = true }
+dirs = { workspace = true }
+# Pin the rustls crypto provider. iroh pulls rustls with default features off,
+# dropping the workspace-wide default provider, which makes reqwest (Tauri's
+# webview asset protocol) panic at boot. `run()` installs `ring` explicitly.
+rustls = { workspace = true }
+# Code-block runtime. `lang-rust` deliberately disabled: it pulls in
+# wasmtime + Cranelift JIT, which inflates the IPA and runs into iOS
+# code-signing restrictions on dynamic code generation. JS / Python /
+# Lua are in-process pure-Rust interpreters and ship fine on iOS.
+# `lang-lisp` is off for the same reason it is off by default in
+# `outl-exec`: Steel cannot be sandboxed from the outside, and a fence
+# that arrived over iroh must not get a shell (see outl-exec/Cargo.toml).
+# The workspace dep already ships defaults OFF; only the iOS-safe
+# runtimes are enabled here.
+outl-exec = { workspace = true, features = [
+    "lang-js",
+    "lang-python",
+    "lang-lua",
+] }
+
+tauri = { workspace = true }
+tauri-plugin-log = { workspace = true }
+tauri-plugin-opener = { workspace = true }
+tauri-plugin-os = { workspace = true }
+# File picker for "attach a file" (import an asset). On iOS the picker is
+# the system document picker. Desktop already has its own dialog dep.
+tauri-plugin-dialog = "2"
+log = { workspace = true }
+# `outl://` deep links (links shared into the app, parity with desktop).
+# iOS has no second-instance problem, so no single-instance plugin here.
+tauri-plugin-deep-link = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+ulid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+# Installs an stderr log subscriber at boot so the transport's info!/warn!/debug!
+# lines reach the device console (idevicesyslog / Xcode on iOS).
+tracing-subscriber = { workspace = true }
+yrs = { workspace = true }
+tauri-plugin-notification = "2"
+
+[target.'cfg(unix)'.dependencies]
+# `run` repeats SIG_IGN for SIGPIPE. Direct, not transitive: the call is ours.
+libc = { workspace = true }
+
+# Barcode / QR scanner — mobile-only (Android + iOS). The primary
+# mobile pairing flow is "scan the host's QR ticket", so the scanner is
+# the camera entry point into `peerPairJoin`. Desktop has no camera path,
+# hence the per-target gate (also keeps the plugin out of host-side
+# `cargo check`/clippy on macOS).
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSFileManager",
+    "NSString",
+    "NSURL",
+] }
+
+# Android JNI bootstrap for iroh (see `android_jni.rs`). iroh's relay client
+# verifies TLS certs through `rustls-platform-verifier`, which calls into the
+# JVM and needs a process-wide handle nothing else primes. We prime it from
+# `MainActivity.onCreate` before iroh's first connection.
+#
+# No `ndk-context` here on purpose, though the system-DNS reader goes through
+# it: `tao` owns that global and seeds it inside `Rust_onCreate`, and a second
+# seed is an `assert!` failure that aborts the app on launch. It stays in the
+# graph transitively, for tao to write and `iroh-dns` to read — this crate must
+# not name it again. See `android_jni.rs`.
+#
+# Both are already in the graph (transitive via iroh); pinned to the resolved
+# versions so no new tree lands. `jni` MUST match the version
+# `rustls-platform-verifier` uses (0.22) or the `Env`/`JObject` types differ.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22"
+rustls-platform-verifier = "0.7"
+
+[features]
+default = []
+# Links the Sentry SDK. Set only by the release pipeline. Leave it off and
+# `outl_telemetry::init` is a function that returns `None`.
+sentry = ["outl-telemetry/sentry"]

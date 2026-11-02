@@ -1,0 +1,68 @@
+name: Cleanup beta tags
+
+# Every push to `main` produces a beta tag + GitHub Release via
+# `release.yml`. Left alone, that bucket grows by one item per
+# merge — by v0.5.3 we already had 39 beta releases. This workflow
+# keeps only the two most recent betas per base version (e.g. for
+# `v0.5.3` it keeps `v0.5.3-beta.39` and `v0.5.3-beta.38`; everything
+# else in the `v0.5.3-beta.*` series is deleted).
+#
+# It runs automatically after `Release` succeeds on `main`, and is
+# also exposed as `workflow_dispatch` with an opt-in `dry_run` flag
+# so we can preview what would be pruned before letting it act.
+#
+# Scope (intentional):
+# - Touches ONLY `vX.Y.Z-beta.N` tags. GA tags like `v0.5.3`
+#   (no `-beta.` suffix) are never considered for deletion.
+# - Deletes both the GitHub Release (with its built binaries) and
+#   the git tag — `gh release delete --cleanup-tag` does both atomically.
+# - Orphan tags (tag exists but the release is already gone) get
+#   pushed as `:refs/tags/<tag>` to drop the ref alone.
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be deleted, but don't delete"
+        type: boolean
+        default: false
+      keep:
+        description: "How many recent betas to keep per base version"
+        type: string
+        default: "2"
+
+permissions:
+  contents: write
+
+concurrency:
+  # Cancel an in-flight cleanup when a newer Release completes (or a
+  # workflow_dispatch fires). The prune is idempotent — every run
+  # recomputes "keep the 2 newest betas per base version" from
+  # scratch, so if we kill a cleanup mid-loop the next one finishes
+  # the job. Queueing both was the old behaviour, safer but wasted
+  # runner minutes on stale prune-state we were about to recompute.
+  group: cleanup-tags
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    name: Prune beta tags
+    # workflow_run fires on every conclusion (success/failure/cancelled).
+    # Only act when the upstream Release actually succeeded.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compute prune list and delete
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          KEEP: ${{ github.event.inputs.keep || '2' }}
+        run: .github/scripts/cleanup_beta_tags.sh
