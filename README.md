@@ -23,10 +23,12 @@ uses.
 - **MCP.** `outl mcp serve` runs as a child process and is bridged over HTTP
   at `POST /api/mcp` (JSON-RPC). Every outl CLI subcommand is available as an
   MCP tool to any MCP client on the network.
-- **Shared filesystem.** The workspace is a mounted volume. Other Home
-  Assistant processes read the `.md` files directly, or use the read-only
-  HTTP API (`/api/fs/list`, `/api/fs/read`). Writes go through MCP or the
-  `outl` CLI so the CRDT stays consistent.
+- **Shared filesystem.** The workspace lives in the Home Assistant
+  configuration folder (`<config>/outl/`), the same pattern esphome uses to
+  expose its device files. Other Home Assistant processes read the `.md`
+  files directly on the host, or use the read-only HTTP API
+  (`/api/fs/list`, `/api/fs/read`). Writes go through MCP or the `outl` CLI
+  so the CRDT stays consistent.
 
 ## Layout
 
@@ -61,15 +63,18 @@ part; the BuildKit cache mounts make rebuilds incremental.
 docker run -d --name outl \
   -p 8090:8090 \
   -v outl-data:/data \
+  -v outl-config:/homeassistant \
   outl-ha-addon
 ```
 
-Open `http://localhost:8090/`. One volume, `/data`, holds everything that must
-survive a rebuild: `/data/workspace` is the replicated notes and `/data/home`
-is this device's identity (the iroh key + actor bindings). iroh only syncs the
-workspace subtree, so the identity is never replicated. Lose `/data/home` and
-the container comes back as a *new* device — unpaired, writing under a fresh
-actor.
+Open `http://localhost:8090/`. Two mounts:
+
+- `/homeassistant/outl` — the replicated notes, in the Home Assistant config
+  folder. This is the user-visible workspace; edit the `.md` files directly
+  on the host.
+- `/data/home` — this device's identity (the iroh key + actor bindings).
+  Private, never replicated. Lose it and the container comes back as a
+  *new* device — unpaired, writing under a fresh actor.
 
 ## Install as a Home Assistant addon
 
@@ -119,7 +124,8 @@ payload is identical.
 
 ## Reading the workspace from other processes
 
-The volume is plain markdown. Read it directly, or use the API:
+The workspace is plain markdown in the Home Assistant config folder
+(`<config>/outl/`). Read it directly on the host, or use the API:
 
 ```sh
 # List the workspace root
@@ -138,7 +144,7 @@ not the intended path.
 
 | Variable          | Default      | Meaning                                   |
 |-------------------|--------------|-------------------------------------------|
-| `OUTL_WORKSPACE`  | `/data/workspace` | Workspace root (under the data volume) |
+| `OUTL_WORKSPACE`  | `/homeassistant/outl` | Workspace root (in the HA config folder) |
 | `OUTL_PORT`       | `8090`       | HTTP port                                 |
 | `OUTL_STATIC_DIR` | `/app/static`| Built frontend                            |
 | `RUST_LOG`        | `info`       | Log filter (`outl=debug` to diagnose sync)|

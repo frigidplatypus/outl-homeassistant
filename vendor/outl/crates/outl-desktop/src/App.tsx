@@ -74,6 +74,12 @@ function App() {
     try {
       const ws = await currentWorkspace();
       if (ws) {
+        // A workspace is open, so one is configured. Set this here (not only
+        // in `hydrateTheme`) so the gate is robust to a boot race: if the
+        // first `getSettings()` call lands before the server is ready, the
+        // polling `refresh()` still flips `hasConfig` once the workspace
+        // opens, and the picker never appears.
+        setHasConfig(true);
         const stats = await workspaceStats();
         setAppState("workspace", stats);
         setReady(stats.ready);

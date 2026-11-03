@@ -9,12 +9,17 @@
 # untouched.
 set -eu
 
-WS="${OUTL_WORKSPACE:-/data/workspace}"
+WS="${OUTL_WORKSPACE:-/homeassistant/outl}"
 
 # The data mount is empty on first start. Create the device-identity dir so
 # the iroh key + actor bindings have somewhere to live (iroh only syncs the
 # workspace subtree, so this is never replicated).
 mkdir -p "$HOME"
+
+# The workspace lives in the Home Assistant config folder (mounted at
+# /homeassistant). The mount exists but the outl/ subdir does not on first
+# start, so create it before scaffolding.
+mkdir -p "$WS"
 
 # Scaffold an empty workspace once. `outl init` is idempotent-safe: it only
 # writes the ops/, journals/, pages/ scaffolding when absent.

@@ -62,10 +62,15 @@ COPY --from=builder /out/outl /usr/local/bin/outl
 COPY frontend/dist /app/static
 COPY docker/entrypoint.sh /usr/local/bin/outl-entrypoint
 
-# The `data` mapping mounts the addon's persistent data folder at /data.
-# Everything that must survive a container rebuild lives under it:
-#   /data/workspace  the outl workspace (the replicated notes)
-#   /data/home       this device's identity + actor bindings
+# The `data` mapping is the addon's private storage (device identity + actor
+# bindings). The `homeassistant_config` mapping mounts the Home Assistant
+# configuration folder at /homeassistant, read-write — the same pattern
+# esphome uses to expose its device files. The outl workspace lives there so
+# the user (and other HA processes) can read and edit the .md files directly
+# on the host, at <config>/outl/.
+#
+#   /homeassistant/outl  the outl workspace (the replicated notes) — user-visible
+#   /data/home           this device's identity + actor bindings (private)
 #
 # $HOME locates the iroh identity (~/.outl/identity.key, which IS this
 # device's node id); $XDG_CONFIG_HOME locates the device store
@@ -76,15 +81,15 @@ COPY docker/entrypoint.sh /usr/local/bin/outl-entrypoint
 # rotate the node id, breaking every pairing.
 ENV HOME=/data/home \
     XDG_CONFIG_HOME=/data/home/.config \
-    OUTL_WORKSPACE=/data/workspace \
+    OUTL_WORKSPACE=/homeassistant/outl \
     OUTL_PORT=8090 \
     OUTL_STATIC_DIR=/app/static \
     RUST_LOG=info
 
-# The supervisor bind-mounts /data from a root-owned host folder, so the
-# container runs as root (the norm for custom images; the HA base images run
-# as root via S6). No USER line.
-WORKDIR /data/workspace
+# The supervisor bind-mounts /data and /homeassistant from root-owned host
+# folders, so the container runs as root (the norm for custom images; the HA
+# base images run as root via S6). No USER line.
+WORKDIR /homeassistant/outl
 STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["/usr/local/bin/outl-entrypoint"]
