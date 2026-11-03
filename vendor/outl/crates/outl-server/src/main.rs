@@ -92,7 +92,18 @@ async fn main() -> anyhow::Result<()> {
     let global_cfg = outl_config::load();
     outl_actions::clock::init(global_cfg.calendar.timezone.as_deref());
 
-    let settings = settings::load();
+    // The addon's workspace is fixed (the mounted volume), so record it as the
+    // last-opened workspace. The frontend's "has a workspace configured" gate
+    // reads `settings.last_workspace != null`; setting it means the workspace
+    // picker never appears and the user lands straight in the app. Persist it
+    // so the config file is written automatically on first boot.
+    let mut settings = settings::load();
+    if settings.last_workspace.as_ref() != Some(&workspace_root) {
+        settings.last_workspace = Some(workspace_root.clone());
+        if let Err(e) = settings::save(&settings) {
+            tracing::warn!("failed to persist last_workspace: {e}");
+        }
+    }
 
     let workspace: Arc<Mutex<Option<Workspace>>> = Arc::new(Mutex::new(None));
     let storage_root: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
