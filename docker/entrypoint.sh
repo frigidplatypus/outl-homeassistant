@@ -11,6 +11,11 @@ set -eu
 
 WS="${OUTL_WORKSPACE:-/data/workspace}"
 
+# The data mount is empty on first start. Create the device-identity dir so
+# the iroh key + actor bindings have somewhere to live (iroh only syncs the
+# workspace subtree, so this is never replicated).
+mkdir -p "$HOME"
+
 # Scaffold an empty workspace once. `outl init` is idempotent-safe: it only
 # writes the ops/, journals/, pages/ scaffolding when absent.
 if [ ! -d "$WS/ops" ] && [ ! -d "$WS/pages" ]; then

@@ -57,9 +57,6 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid 1000 outl \
- && useradd --uid 1000 --gid 1000 --home-dir /home/outl --create-home outl
-
 COPY --from=builder /out/outl-server /usr/local/bin/outl-server
 COPY --from=builder /out/outl /usr/local/bin/outl
 COPY frontend/dist /app/static
@@ -84,10 +81,9 @@ ENV HOME=/data/home \
     OUTL_STATIC_DIR=/app/static \
     RUST_LOG=info
 
-RUN mkdir -p /data/workspace /data/home/.outl /data/home/.config/outl \
- && chown -R outl:outl /data
-
-USER outl
+# The supervisor bind-mounts /data from a root-owned host folder, so the
+# container runs as root (the norm for custom images; the HA base images run
+# as root via S6). No USER line.
 WORKDIR /data/workspace
 STOPSIGNAL SIGTERM
 
