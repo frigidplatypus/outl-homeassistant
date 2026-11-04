@@ -64,6 +64,10 @@ function App() {
   // must render a loading screen, NOT the workspace picker. Showing the picker
   // there makes a returning user think their config was lost.
   const [hasConfig, setHasConfig] = createSignal(false);
+  // Whether the backend has responded to at least one request. While
+  // `false`, the gate cannot distinguish "no workspace configured" from
+  // "server not up yet" — it must show a loading state, not the picker.
+  const [serverReachable, setServerReachable] = createSignal(false);
 
   function finishOnboarding() {
     markOnboarded();
@@ -73,6 +77,7 @@ function App() {
   async function refresh() {
     try {
       const ws = await currentWorkspace();
+      setServerReachable(true);
       if (ws) {
         // A workspace is open, so one is configured. Set this here (not only
         // in `hydrateTheme`) so the gate is robust to a boot race: if the
@@ -122,6 +127,7 @@ function App() {
   async function hydrateTheme(): Promise<() => void> {
     try {
       const s = await getSettings();
+      setServerReachable(true);
       // A configured workspace is known from `settings.last_workspace` on disk
       // IMMEDIATELY — long before the background opener publishes the live
       // `storage_root` (that only happens after the op-log replay). This is the
@@ -200,15 +206,16 @@ function App() {
         fallback={<div class="p-8 opacity-50">Loading…</div>}
       >
         {/* Ready + onboarded → the app. Not ready yet, but a workspace IS
-            configured → the background opener is still replaying; show a
-            loading screen, never the picker (that reads as "my config was
-            lost"). Only run onboarding when there's truly no config (first
-            run, or the picked folder was removed). */}
+            configured (or the server hasn't responded yet) → show a
+            loading screen, never the picker. The picker only appears when
+            the server is confirmed reachable AND reports no workspace —
+            which in the addon never happens (the server always sets
+            `last_workspace` at boot). */}
         <Show
           when={ready() && onboarded()}
           fallback={
             <Show
-              when={hasConfig()}
+              when={hasConfig() || !serverReachable()}
               fallback={
                 <Onboarding
                   onWorkspacePicked={refresh}

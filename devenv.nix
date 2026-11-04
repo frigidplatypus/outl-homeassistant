@@ -20,10 +20,11 @@
     pkgs.stdenv.cc
     pkgs.gnumake
     pkgs.openssl
-    # Tauri system deps for the full Rust workspace build (outl-server links
-    # outl-tauri-shared → tauri). These need a full nixpkgs; the minimal
-    # devenv variant lacks them. Add when your nixpkgs has them:
-    # pkgs.libwebkit2gtk_4_1, pkgs.librsvg2, pkgs.libxdo, pkgs.ayatana-appindicator3
+    # Tauri 2 system deps (outl-server → outl-tauri-shared → tauri)
+    pkgs.webkitgtk_4_1
+    pkgs.gtk3
+    pkgs.librsvg
+    pkgs.xdo
   ];
 
   # https://devenv.sh/languages/
