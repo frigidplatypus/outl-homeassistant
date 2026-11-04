@@ -88,7 +88,22 @@ function App() {
         if (stats.ready && !onboarded()) finishOnboarding();
       } else {
         setReady(false);
+        // The server is up but the workspace hasn't finished opening yet.
+        // Check `last_workspace` from settings so the gate shows "Opening…"
+        // instead of the picker during the boot window.
+        try {
+          const s = await getSettings();
+          if (s.last_workspace != null) setHasConfig(true);
+        } catch {
+          // Server not reachable yet — leave hasConfig as-is.
+        }
       }
+    } catch {
+      // The server is not reachable yet (the iframe can load before the
+      // addon binds its port). Swallow the error so this `refresh()` resolves
+      // instead of rejecting — a rejection would abort the `onMount` boot
+      // sequence and skip the polling that recovers once the server is up.
+      // State is left as-is; the next poll retries.
     } finally {
       setChecked(true);
     }
