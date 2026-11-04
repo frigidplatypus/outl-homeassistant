@@ -2,7 +2,7 @@
   "name": "outl",
   "slug": "outl",
   "description": "Local-first outliner with P2P sync. Serves the outl UI in a Home Assistant panel, exposes the MCP server, and shares the workspace volume with the rest of Home Assistant.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "startup": "application",
   "boot": "auto",
   "arch": ["amd64"],
