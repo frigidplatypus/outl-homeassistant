@@ -20,9 +20,10 @@ let socket: WebSocket | null = null;
 
 function wsUrl(): string {
   const base = apiBase();
-  const origin = base || window.location.origin;
-  const ws = origin.replace(/^http/, "ws");
-  return `${ws}/api/events`;
+  // Absolute URL required: `new WebSocket` rejects a relative path, and the
+  // base is a path (`/api/hassio_ingress/{token}`) inside an ingress iframe.
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}${base}/api/events`;
 }
 
 function ensureSocket(): WebSocket {
