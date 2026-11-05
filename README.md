@@ -90,19 +90,36 @@ Open `http://localhost:8090/`. Two mounts:
 
 ## Pairing a device
 
-The addon is an always-on peer. Pair it with your laptop or phone once, from
-the *other* device (the one that hosts the pairing):
+The addon joins an existing sync cluster through its configuration — there is
+no shell step. Pairing runs at boot, before the server opens the workspace:
+the server holds the workspace id in memory for its lifetime, so joining
+while it runs would leave it on the pre-adoption id and every exchange would
+be refused as a workspace mismatch until the next restart.
 
-```sh
-# On your laptop, create a pairing ticket:
-outl peer pair --host
+1. On the machine that already has the notes (laptop, phone — the *host*),
+   start pairing. It prints a ticket and waits 120 seconds for the joiner:
 
-# On the addon (via the HA terminal or `docker exec`), join it:
-docker exec -it outl outl peer pair --join <ticket>
-```
+   ```sh
+   outl peer pair
+   ```
 
-After that, the two converge automatically. The addon's sync dot in the UI
-shows peer status; `outl peer status` lists them.
+2. Copy the `outlpair1.…` ticket into the addon's **Configuration →
+   Pairing Ticket**, and optionally set **Peer Name** (the label the addon
+   advertises; the hostname is the default).
+3. Restart the addon within the 120-second window. It joins from the ticket,
+   adopts the host's workspace id, and both folders become the same graph.
+   Clear the ticket afterwards — it is single-use; replaying it logs a
+   warning and boot continues unpaired (sync then runs off the peer list
+   already on disk).
+
+The two converge as soon as both are online. `outl peer list` on the host
+shows the addon's status. Re-pairing is only needed after `outl peer revoke`
+on the host, which rotates the workspace identity and locks out every device
+— all of them, including ones you no longer have.
+
+Identity lives on the addon's data volume, so pairing survives restarts and
+addon updates; the workspace itself is the shared folder in the Home
+Assistant config directory.
 
 ## Using the MCP server
 
