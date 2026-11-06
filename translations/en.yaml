@@ -1,0 +1,14 @@
+configuration:
+  pairing_ticket:
+    name: Pairing ticket
+    description: >-
+      Ticket (outlpair1.… from `outl peer pair` on a machine that already
+      holds the notes). The add-on joins the sync cluster at boot, before
+      the server opens the workspace, then adopts the host's workspace id.
+      Paste the ticket, restart the add-on within the 120-second pairing
+      window, then clear it — tickets are single-use.
+  peer_name:
+    name: Peer name
+    description: >-
+      Name this device advertises to sync peers. Defaults to the
+      container hostname.
