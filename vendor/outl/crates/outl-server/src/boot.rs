@@ -253,22 +253,25 @@ fn spawn_projection_sweeper(state: Arc<AppState>, wake_rx: std::sync::mpsc::Rece
         .spawn(move || {
             let hlc = state.hlc.clone();
             let mut last_sweep = Instant::now() - PROJECTION_MIN_INTERVAL;
-            let mut due = false;
             let mut last_reported: std::collections::BTreeSet<String> = Default::default();
             loop {
-                let timeout = PROJECTION_MIN_INTERVAL.saturating_sub(last_sweep.elapsed());
-                match wake_rx.recv_timeout(timeout) {
-                    Ok(()) => {
-                        due = true;
-                        while wake_rx.try_recv().is_ok() {}
-                    }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => break,
+                // Idle: park until sync says the tree moved. Without a wake
+                // there is nothing new to render, so the sweep sleeps on the
+                // channel rather than on a clock — a poll loop is a CPU burn
+                // that produces nothing on an idle always-on peer.
+                if wake_rx.recv().is_err() {
+                    break;
                 }
-                if !due || last_sweep.elapsed() < PROJECTION_MIN_INTERVAL {
-                    continue;
+                while wake_rx.try_recv().is_ok() {}
+                // Floor: a sync burst renders the graph once, not per batch.
+                // Wakes that land during the wait are coalesced — the replay
+                // below reads the op log, which already holds them.
+                let remaining = PROJECTION_MIN_INTERVAL.saturating_sub(last_sweep.elapsed());
+                if !remaining.is_zero()
+                    && wake_rx.recv_timeout(remaining) == Err(RecvTimeoutError::Disconnected)
+                {
+                    break;
                 }
-                due = false;
                 last_sweep = Instant::now();
 
                 let Some(root) = state.storage_root.lock().clone() else {
