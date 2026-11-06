@@ -172,6 +172,11 @@ go through the MCP bridge — the server owns the task grammar and logs every
 change to the op log — and fall back to a compare-and-swap `.md` edit,
 reconciled by the file watcher, only while the addon is down.
 
+The integration ships the outl octopus as its Home Assistant brand icon
+(`brand/`, HA >= 2026.3): Settings -> Devices & Services shows the color
+icon, `dark_icon.*` covers dark themes. The sidebar panel icon is separate
+and stays `mdi:note-text` (config.json `panel_icon`) unless you swap it.
+
 ## Environment
 
 | Variable          | Default      | Meaning                                   |
