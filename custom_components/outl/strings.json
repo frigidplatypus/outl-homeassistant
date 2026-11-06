@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "workspace_path": "Workspace path",
+          "mcp_url": "outl add-on MCP URL"
+        },
+        "data_description": {
+          "workspace_path": "Folder holding pages/ and journals/ (the add-on's workspace).",
+          "mcp_url": "Base URL of the outl add-on, e.g. http://core-outl:8090. Empty falls back to file writes only."
+        }
+      }
+    },
+    "error": {
+      "no_workspace": "No pages/ or journals/ found at that path."
+    },
+    "abort": {
+      "already_configured": "That workspace is already configured."
+    }
+  }
+}

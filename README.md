@@ -157,6 +157,21 @@ To *write* from another process, use the MCP tools (e.g. `outl_page_create`,
 `.md` edit is also reconciled by the file watcher, but that is a fallback,
 not the intended path.
 
+## The outl To-do integration
+
+`custom_components/outl/` is a Home Assistant integration that surfaces the
+workspace's tasks as a To-do list entity: the same list the GUI's task pane
+shows, inside HA's To-do view, dashboard cards, voice, and automations.
+Copy it to `config/custom_components/outl/` and add one entry — the
+workspace path defaults to `<config>/outl`, the MCP bridge to
+`http://outl:8090` (the addon's slug hostname).
+
+Reads scan the projected `.md` files and their `.outl` sidecars; the sidecar
+block id is the item uid, so an item keeps its identity across edits. Writes
+go through the MCP bridge — the server owns the task grammar and logs every
+change to the op log — and fall back to a compare-and-swap `.md` edit,
+reconciled by the file watcher, only while the addon is down.
+
 ## Environment
 
 | Variable          | Default      | Meaning                                   |

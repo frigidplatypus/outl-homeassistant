@@ -1,0 +1,12 @@
+{
+  "domain": "outl",
+  "name": "outl",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/frigidplatypus/outl-homeassistant-addon",
+  "iot_class": "local_polling",
+  "is_built_in": false,
+  "requirements": [],
+  "version": "0.2.0"
+}
