@@ -2,7 +2,7 @@
   "name": "outl",
   "slug": "outl",
   "description": "Local-first outliner with P2P sync. Serves the outl UI in a Home Assistant panel, exposes the MCP server, and shares the workspace volume with the rest of Home Assistant.",
-  "version": "0.1.8.1",
+  "version": "0.1.9",
   "startup": "application",
   "boot": "auto",
   "arch": ["amd64"],
@@ -17,7 +17,7 @@
   "hassio_api": false,
   "image": "ghcr.io/frigidplatypus/outl-homeassistant-addon-{arch}",
   "schema": {
-    "pairing_ticket": { "description": "Ticket: eyJ... from `outl peer pair` on a machine with existing notes. Join runs at boot; clear it after pairing.", "type": "str", "default": "" },
-    "peer_name": { "description": "Name this device advertises to peers (default: hostname).", "type": "str", "default": "" }
+    "pairing_ticket": "str?",
+    "peer_name": "str?"
   }
 }
