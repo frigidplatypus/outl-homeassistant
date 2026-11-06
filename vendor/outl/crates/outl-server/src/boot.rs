@@ -9,12 +9,15 @@
 //! connected browsers over WebSocket.
 
 use std::path::PathBuf;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use outl_actions::SyncTransport;
+use outl_actions::journal::reproject_stale_pages;
+use outl_actions::{SyncEngine, SyncTransport};
 use outl_core::id::ActorId;
+use outl_core::workspace::Workspace;
 use outl_tauri_shared::reconcile::spawn_background_reconcile;
 use outl_tauri_shared::workspace_open::open_workspace_at;
 use parking_lot::Mutex;
@@ -65,7 +68,7 @@ pub fn spawn_workspace_opener(state: Arc<AppState>, root: PathBuf) {
 
             // Wire the iroh P2P transport (best-effort, gated on
             // `[sync] transport = "iroh"`).
-            wire_iroh(&iroh_slot, root.clone(), actor, events.clone());
+            wire_iroh(&iroh_slot, root.clone(), actor, events.clone(), state);
 
             // Background reconcile: scan and reconcile orphan `.md` files.
             spawn_background_reconcile(
@@ -145,6 +148,7 @@ fn wire_iroh(
     workspace_root: PathBuf,
     actor: ActorId,
     events: Hub,
+    state: Arc<AppState>,
 ) {
     let transport = match outl_sync_iroh::build_default_transport(&workspace_root) {
         Ok(outl_sync_iroh::TransportOutcome::Ready(t)) => t,
@@ -175,17 +179,29 @@ fn wire_iroh(
     // delivery path wins. This is the server's replacement for
     // `outl_tauri_shared::iroh_sync::start_with_reload_bridge`, which needs a
     // Tauri `AppHandle` to emit.
+    //
+    // The same wake drives the `tree → .md` projection sweep: ops arriving
+    // by sync change the tree and nothing else, so the `.md` a peer sees on
+    // disk stays wrong until something re-projects it. A connected browser
+    // reloads the tree through `reload_workspace`, but the addon is a
+    // headless always-on peer — disk is the interface, so the server owns
+    // this half the same way `outl serve` does.
     let (progress_tx, progress_rx) = std::sync::mpsc::channel::<outl_actions::SyncProgress>();
     transport.set_progress_sink(progress_tx);
     let (peer_ready_tx, peer_ready_rx) = std::sync::mpsc::channel::<()>();
-    transport.start(workspace_root, actor, peer_ready_tx);
+    transport.start(workspace_root.clone(), actor, peer_ready_tx);
 
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
     let ev = events.clone();
+    let wake = wake_tx.clone();
     thread::Builder::new()
         .name("outl-iroh-bridge".into())
         .spawn(move || {
             while peer_ready_rx.recv().is_ok() {
                 ev.emit("peer-ops-changed");
+                // Hand the sweep its own copy; a stopped sweeper must not
+                // silence the frontend event.
+                wake.send(()).ok();
             }
             info!("iroh peer-ready bridge ended");
         })
@@ -202,6 +218,88 @@ fn wire_iroh(
         })
         .expect("spawning the iroh progress thread should not fail");
 
+    // The `tree → .md` executor. Peer ops land in the op log and the live
+    // tree moves; nothing else renders the page onto disk until a browser
+    // opens it or the process reopens it. Headless, disk is the interface,
+    // so the sweep runs on the sync wake, throttled to
+    // PROJECTION_MIN_INTERVAL: the sweep renders every page to compare it
+    // with disk, and a sync burst must not render the graph per batch. A
+    // lagging `.md` is invisible to correctness — the op log holds the
+    // truth and peers exchange ops, not files.
+    spawn_projection_sweeper(state, wake_rx);
+
     *slot.lock() = Some(Arc::new(transport) as Arc<dyn SyncTransport>);
     info!("iroh sync transport wired");
+}
+
+/// Floor on how often the `tree → .md` sweep runs, matching `outl serve`'s
+/// `PROJECTION_MIN_INTERVAL`: the sweep renders every page to compare it
+/// with disk, so a sync burst must not render the graph once per batch.
+const PROJECTION_MIN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// The server's `tree → .md` executor, owned by the same wake as the
+/// frontend event bridge.
+///
+/// Replays the op log into a throwaway tree (`SyncEngine::reload_workspace`,
+/// exactly what `outl serve`'s sweep loop does) and re-projects only pages
+/// the survey classifies stale. The throwaway tree is deliberate: the sweep
+/// must not race live commands for the shared slot, and disk wants the op
+/// log's truth, which the replay is. A refused or withheld page is named
+/// once per change, never per sweep — a repeating daemon log is silence
+/// with more lines.
+fn spawn_projection_sweeper(state: Arc<AppState>, wake_rx: std::sync::mpsc::Receiver<()>) {
+    thread::Builder::new()
+        .name("outl-projection-sweeper".into())
+        .spawn(move || {
+            let hlc = state.hlc.clone();
+            let mut last_sweep = Instant::now() - PROJECTION_MIN_INTERVAL;
+            let mut due = false;
+            let mut last_reported: std::collections::BTreeSet<String> = Default::default();
+            loop {
+                let timeout = PROJECTION_MIN_INTERVAL.saturating_sub(last_sweep.elapsed());
+                match wake_rx.recv_timeout(timeout) {
+                    Ok(()) => {
+                        due = true;
+                        while wake_rx.try_recv().is_ok() {}
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+                if !due || last_sweep.elapsed() < PROJECTION_MIN_INTERVAL {
+                    continue;
+                }
+                due = false;
+                last_sweep = Instant::now();
+
+                let Some(root) = state.storage_root.lock().clone() else {
+                    continue;
+                };
+                let engine = SyncEngine::new(root.clone(), hlc.actor());
+                let fresh = match engine.reload_workspace(&hlc) {
+                    Ok(ws) => ws,
+                    Err(e) => {
+                        warn!("projection sweep: op-log replay failed: {e}");
+                        continue;
+                    }
+                };
+                let sweep = reproject_stale_pages(&fresh, &root);
+                if !sweep.written.is_empty() {
+                    info!("projection sweep: re-projected {} page(s)", sweep.written.len());
+                }
+                let attention: std::collections::BTreeSet<String> = sweep
+                    .withheld
+                    .iter()
+                    .map(|p| p.path.display().to_string())
+                    .chain(sweep.refused.iter().map(|p| p.path.display().to_string()))
+                    .collect();
+                if attention != last_reported {
+                    last_reported = attention.clone();
+                    for path in &attention {
+                        warn!("projection sweep: page projection stalled for {path}");
+                    }
+                }
+            }
+            info!("projection sweeper ended");
+        })
+        .expect("spawning the projection sweeper should not fail");
 }
