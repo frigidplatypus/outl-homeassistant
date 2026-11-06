@@ -259,7 +259,7 @@ def collect_tasks(root: Path, limit: int = 100) -> dict[str, Any]:
 
 def _reverse_str(s: str) -> str:
     """Descending sort key for equal-length ISO-date slugs."""
-    return "".join(chr(0x10FFFF - ord(c)) if ord(c) < 0x110000 else c for c in s)
+    return "".join(chr(0x10FFFF - ord(c)) for c in s)
 
 
 def rewrite_task_line(
@@ -288,28 +288,17 @@ def rewrite_task_line(
     return True
 
 
-def append_task_line(root: Path, slug: str, text: str) -> str | None:
-    """Append a task line to a page (or today's journal). Returns its file."""
-    target = root / "pages" / f"{slug}.md"
-    if not target.exists():
-        return None
-    try:
-        content = target.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    suffix = "" if content.endswith("\n") else "\n"
-    _atomic_write(target, content + f"{suffix}- {text}\n")
-    return str(target)
-
-
 def append_journal_task(root: Path, slug: str, text: str) -> str | None:
     """Append a task to a dated journal, scaffolding the file if absent."""
     target = root / "journals" / f"{slug}.md"
-    if target.exists():
-        return append_task_line(root, slug, text)
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, f"- {text}\n")
+        if target.exists():
+            content = target.read_text(encoding="utf-8")
+            suffix = "" if content.endswith("\n") else "\n"
+            _atomic_write(target, content + f"{suffix}- {text}\n")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(target, f"- {text}\n")
     except OSError:
         return None
     return str(target)
@@ -319,8 +308,6 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp-ha")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
-
-
 
 
 class McpError(RuntimeError):

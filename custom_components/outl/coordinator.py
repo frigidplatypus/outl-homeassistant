@@ -67,6 +67,7 @@ class OutlCoordinator(DataUpdateCoordinator[dict]):
                 await self.hass.async_add_executor_job(
                     mcp_set_todo_status, self.mcp_url, row.uid, status
                 )
+                await self.async_request_refresh()
                 return True
             except McpError as err:
                 _LOGGER.debug("mcp status write failed, falling back to file: %s", err)
@@ -78,10 +79,11 @@ class OutlCoordinator(DataUpdateCoordinator[dict]):
             task_text(row.text, status),
         )
         if ok:
-            await self.async_refresh()
+            await self.async_request_refresh()
         return ok
 
     async def async_create(self, summary: str, due: str | None) -> bool:
+        """Add a task to today's journal (the list's foot; see ranking)."""
         text = task_text(summary, "needs_action")
         if due:
             text = f"{text} due:: {due}"
@@ -90,13 +92,14 @@ class OutlCoordinator(DataUpdateCoordinator[dict]):
                 await self.hass.async_add_executor_job(
                     mcp_append_journal_task, self.mcp_url, text
                 )
+                await self.async_request_refresh()
                 return True
             except McpError as err:
                 _LOGGER.debug("mcp create failed, falling back to file: %s", err)
         ok = await self.hass.async_add_executor_job(
             append_journal_task, self.root, date.today().isoformat(), text
         )
-        await self.async_refresh()
+        await self.async_request_refresh()
         return ok is not None
 
     async def async_delete(self, uid: str) -> bool:
@@ -109,6 +112,7 @@ class OutlCoordinator(DataUpdateCoordinator[dict]):
                 await self.hass.async_add_executor_job(
                     mcp_call, self.mcp_url, "outl_block_delete", {"id": row.uid, "confirm": True}
                 )
+                await self.async_request_refresh()
                 return True
             except McpError as err:
                 _LOGGER.debug("mcp delete failed, falling back to file: %s", err)
@@ -119,7 +123,7 @@ class OutlCoordinator(DataUpdateCoordinator[dict]):
             rewrite_task_line, Path(row.path), row.line_no, row.text, _body_of(row.text)
         )
         if ok:
-            await self.async_refresh()
+            await self.async_request_refresh()
         return ok
 
 

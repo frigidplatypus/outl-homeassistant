@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import logging
 
 from homeassistant.components.todo import (
     TodoItem,
@@ -11,19 +10,18 @@ from homeassistant.components.todo import (
     TodoListEntity,
     TodoListEntityFeature,
 )
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import OutlCoordinator
-from .outl_tasks import STATUS_DOING, STATUS_OPEN, TaskRow
-
-_LOGGER = logging.getLogger(__name__)
+from .outl_tasks import STATUS_DONE, STATUS_DOING, STATUS_OPEN, TaskRow
 
 # HA's stable status enum is two-valued; DOING is a more accurate
 # needs_action, and the server keeps the distinction on disk regardless.
 _STATUS = {
     STATUS_OPEN: TodoItemStatus.NEEDS_ACTION,
     STATUS_DOING: TodoItemStatus.NEEDS_ACTION,
-    "completed": TodoItemStatus.COMPLETED,
+    STATUS_DONE: TodoItemStatus.COMPLETED,
 }
 
 
@@ -47,14 +45,19 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([OutlTodoEntity(coordinator)])
 
 
-class OutlTodoEntity(TodoListEntity):
-    """One list per workspace -- the GUI's task list, inside HA."""
+class OutlTodoEntity(CoordinatorEntity[OutlCoordinator], TodoListEntity):
+    """One list per workspace -- the GUI's task list, inside HA.
+
+    CoordinatorEntity registers the listener that re-writes state on every
+    coordinator refresh, so a completed write (MCP or file) moves cards and
+    counters without waiting for the next poll.
+    """
 
     _attr_name = "outl tasks"
     _attr_has_entity_name = False
 
     def __init__(self, coordinator: OutlCoordinator) -> None:
-        self._coordinator = coordinator
+        super().__init__(coordinator)
         self._attr_unique_id = f"{DOMAIN}_{coordinator.root}"
 
     @property
@@ -68,7 +71,11 @@ class OutlTodoEntity(TodoListEntity):
 
     @property
     def todo_items(self) -> list[TodoItem]:
-        return [_to_item(row) for row in (self._coordinator.data or {}).get("tasks", ())]
+        return [_to_item(row) for row in (self.coordinator.data or {}).get("tasks", ())]
+
+    async def async_update(self) -> None:
+        """Back the generic entity update service with a coordinator poll."""
+        await self.coordinator.async_request_refresh()
 
     async def async_create_todo_item(self, item: TodoItem) -> None:
         if isinstance(item.due, datetime.datetime):
@@ -77,9 +84,8 @@ class OutlTodoEntity(TodoListEntity):
             due = item.due.isoformat()
         else:
             due = None
-        if not await self._coordinator.async_create(item.summary or "", due):
+        if not await self.coordinator.async_create(item.summary or "", due):
             raise ValueError("outl rejected the new task")
-        await self._coordinator.async_request_refresh()
 
     async def async_update_todo_item(self, item: TodoItem) -> None:
         if not item.uid:
@@ -89,12 +95,11 @@ class OutlTodoEntity(TodoListEntity):
             if item.status == TodoItemStatus.COMPLETED
             else "needs_action"
         )
-        if not await self._coordinator.async_set_status(item.uid, status):
-            await self._coordinator.async_request_refresh()
+        if not await self.coordinator.async_set_status(item.uid, status):
+            await self.coordinator.async_request_refresh()
             raise ValueError(f"outl task {item.uid} moved; retry against the new state")
 
     async def async_delete_todo_items(self, uids: list[str]) -> None:
         for uid in uids:
-            if not await self._coordinator.async_delete(uid):
+            if not await self.coordinator.async_delete(uid):
                 raise ValueError(f"outl task {uid} moved; retry against the new state")
-        await self._coordinator.async_request_refresh()
