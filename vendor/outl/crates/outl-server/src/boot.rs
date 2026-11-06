@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 use outl_actions::journal::reproject_stale_pages;
 use outl_actions::{SyncEngine, SyncTransport};
 use outl_core::id::ActorId;
-use outl_core::workspace::Workspace;
 use outl_tauri_shared::reconcile::spawn_background_reconcile;
 use outl_tauri_shared::workspace_open::open_workspace_at;
 use parking_lot::Mutex;
@@ -37,6 +36,11 @@ pub fn spawn_workspace_opener(state: Arc<AppState>, root: PathBuf) {
     let storage_root_slot = state.storage_root.clone();
     let workspace_guards = state.workspace_guards.clone();
     let iroh_slot = state.iroh_transport.clone();
+    // One wake for the projection sweeper, fed by every source that can
+    // move the tree: iroh ingest, and the ops/ watcher (whose peer files
+    // are how sync degrades when no process holds the endpoint). Created
+    // here so the sweeper outlives transport wiring and covers every path.
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
 
     thread::Builder::new()
         .name("outl-boot-opener".into())
@@ -58,8 +62,9 @@ pub fn spawn_workspace_opener(state: Arc<AppState>, root: PathBuf) {
             };
 
             // Start the file watcher before publishing so the first peer
-            // change after boot is captured.
-            start_ops_watcher(&root, actor, events.clone());
+            // change after boot is captured. In shared-fs mode (no process
+            // holds the iroh endpoint) its wake is the sweeper's only feed.
+            start_ops_watcher(&root, actor, events.clone(), wake_tx.clone());
 
             *workspace_slot.lock() = Some(workspace);
             *storage_root_slot.lock() = Some(root.clone());
@@ -68,7 +73,11 @@ pub fn spawn_workspace_opener(state: Arc<AppState>, root: PathBuf) {
 
             // Wire the iroh P2P transport (best-effort, gated on
             // `[sync] transport = "iroh"`).
-            wire_iroh(&iroh_slot, root.clone(), actor, events.clone(), state);
+            wire_iroh(&iroh_slot, root.clone(), actor, events.clone(), wake_tx.clone());
+
+            // The `tree → .md` executor, alive on every sync path — iroh,
+            // shared-fs, or neither. See its docs.
+            spawn_projection_sweeper(state, wake_rx);
 
             // Background reconcile: scan and reconcile orphan `.md` files.
             spawn_background_reconcile(
@@ -85,7 +94,12 @@ pub fn spawn_workspace_opener(state: Arc<AppState>, root: PathBuf) {
 /// peer writes its `ops-<actor>.jsonl`. Scoped to `ops/` (not the root) to
 /// avoid the feedback loop the desktop documents: our own `.md` projections
 /// must not re-trigger a reload.
-fn start_ops_watcher(root: &PathBuf, own_actor: ActorId, events: Hub) {
+fn start_ops_watcher(
+    root: &PathBuf,
+    own_actor: ActorId,
+    events: Hub,
+    sweep_wake: std::sync::mpsc::Sender<()>,
+) {
     let ops_dir = root.join("ops");
     if !ops_dir.exists() {
         return;
@@ -110,6 +124,7 @@ fn start_ops_watcher(root: &PathBuf, own_actor: ActorId, events: Hub) {
                 });
                 if interesting {
                     events.emit("peer-ops-changed");
+                    sweep_wake.send(()).ok();
                 }
             }
             Err(errors) => {
@@ -148,7 +163,7 @@ fn wire_iroh(
     workspace_root: PathBuf,
     actor: ActorId,
     events: Hub,
-    state: Arc<AppState>,
+    sweep_wake: std::sync::mpsc::Sender<()>,
 ) {
     let transport = match outl_sync_iroh::build_default_transport(&workspace_root) {
         Ok(outl_sync_iroh::TransportOutcome::Ready(t)) => t,
@@ -178,30 +193,23 @@ fn wire_iroh(
     // file watcher emits, so the frontend reload path is identical whichever
     // delivery path wins. This is the server's replacement for
     // `outl_tauri_shared::iroh_sync::start_with_reload_bridge`, which needs a
-    // Tauri `AppHandle` to emit.
-    //
-    // The same wake drives the `tree → .md` projection sweep: ops arriving
-    // by sync change the tree and nothing else, so the `.md` a peer sees on
-    // disk stays wrong until something re-projects it. A connected browser
-    // reloads the tree through `reload_workspace`, but the addon is a
-    // headless always-on peer — disk is the interface, so the server owns
-    // this half the same way `outl serve` does.
+    // Tauri `AppHandle` to emit. The same wake feeds the projection sweeper
+    // the opener spawned: ops arriving by sync move the tree and nothing
+    // else renders the page onto disk, so a headless peer's files follow the
+    // op log on this wake.
     let (progress_tx, progress_rx) = std::sync::mpsc::channel::<outl_actions::SyncProgress>();
     transport.set_progress_sink(progress_tx);
     let (peer_ready_tx, peer_ready_rx) = std::sync::mpsc::channel::<()>();
     transport.start(workspace_root.clone(), actor, peer_ready_tx);
 
-    let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
     let ev = events.clone();
-    let wake = wake_tx.clone();
     thread::Builder::new()
         .name("outl-iroh-bridge".into())
         .spawn(move || {
             while peer_ready_rx.recv().is_ok() {
                 ev.emit("peer-ops-changed");
-                // Hand the sweep its own copy; a stopped sweeper must not
-                // silence the frontend event.
-                wake.send(()).ok();
+                // A stopped sweeper must not silence the frontend event.
+                sweep_wake.send(()).ok();
             }
             info!("iroh peer-ready bridge ended");
         })
@@ -216,17 +224,7 @@ fn wire_iroh(
             }
             info!("iroh progress bridge ended");
         })
-        .expect("spawning the iroh progress thread should not fail");
-
-    // The `tree → .md` executor. Peer ops land in the op log and the live
-    // tree moves; nothing else renders the page onto disk until a browser
-    // opens it or the process reopens it. Headless, disk is the interface,
-    // so the sweep runs on the sync wake, throttled to
-    // PROJECTION_MIN_INTERVAL: the sweep renders every page to compare it
-    // with disk, and a sync burst must not render the graph per batch. A
-    // lagging `.md` is invisible to correctness — the op log holds the
-    // truth and peers exchange ops, not files.
-    spawn_projection_sweeper(state, wake_rx);
+        .expect("spawning the iroh progress bridge should not fail");
 
     *slot.lock() = Some(Arc::new(transport) as Arc<dyn SyncTransport>);
     info!("iroh sync transport wired");

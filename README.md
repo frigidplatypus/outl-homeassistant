@@ -168,8 +168,10 @@ not the intended path.
 
 ## Notes and limits
 
-- **Pairing is CLI-only.** The UI's pairing buttons are disabled; the addon
-  is an always-on peer, so pairing is a one-time CLI step.
+- **Pairing is boot-time and option-driven.** Paste the ticket into
+  **Configuration → Pairing Ticket**, restart within the 120-second window
+  (see Pairing a device). The UI's pairing buttons are disabled: pairing
+  must precede the server opening the workspace.
 - **No runtime workspace swap.** The workspace is the fixed mounted volume,
   opened at boot. The "pick a folder" picker never appears.
 - **OS file drag-and-drop** reports file names, not paths (a browser has no
