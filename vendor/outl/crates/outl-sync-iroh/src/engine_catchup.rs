@@ -324,6 +324,12 @@ pub(crate) async fn run_catch_up<F>(
     // failed (absent from the map). This replaces the old "synced once, never
     // again" set that made convergence hostage to the gossip path.
     let mut last_synced: HashMap<iroh::EndpointId, Instant> = HashMap::new();
+    // Consecutive failures per peer, for transition-only logging: the first
+    // failure after a clean stretch WARNs, continuing failures drop to debug.
+    // The retry cadence is untouched — a dead peer is still re-dialed every
+    // tick (the convergence net `MAINTENANCE_RESYNC` exists to be); only the
+    // log lines report changes, not attempts.
+    let mut report: HashMap<iroh::EndpointId, u32> = HashMap::new();
     // Drives the warm-up ramp: the first `WARMUP_TICKS` iterations wait
     // `WARMUP_PERIOD`, the rest wait `period` (see the constants). Iteration 0
     // fires immediately — the old `tokio::time::interval` fired its first tick
@@ -361,6 +367,7 @@ pub(crate) async fn run_catch_up<F>(
                                 Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                                     info!("catch-up: workspace id changed; clearing synced dedup to re-dial");
                                     last_synced.clear();
+                                    report.clear();
                                 }
                                 // Sender dropped (transport shutdown): stop listening,
                                 // keep ticking on the sleep alone.
@@ -416,9 +423,19 @@ pub(crate) async fn run_catch_up<F>(
             .await
             {
                 Ok(()) => {
-                    info!("catch-up: sync to {} ok", label(nid));
-                    // Stamp the success so this peer is skipped until it goes
-                    // stale (`resync_after`), then re-dialed as maintenance.
+                    // Name transitions, not attempts: a healthy mesh re-dials
+                    // every peer every maintenance tick, and a per-attempt
+                    // line turns "converged" into a firehose (same contract
+                    // as the projection sweeper's name-once-per-change).
+                    let recovering = report.remove(&nid).is_some();
+                    let maintenance = last_synced.contains_key(&nid);
+                    if recovering {
+                        info!("catch-up: sync to {} recovered", label(nid));
+                    } else if maintenance {
+                        debug!("catch-up: maintenance sync to {} ok", label(nid));
+                    } else {
+                        info!("catch-up: sync to {} ok", label(nid));
+                    }
                     last_synced.insert(nid, Instant::now());
                     if let Some(h) = &health {
                         h.record_success(nid, started);
@@ -450,7 +467,16 @@ pub(crate) async fn run_catch_up<F>(
                 Err(e) => {
                     // Drop any stale timestamp so the next tick retries it now.
                     last_synced.remove(&nid);
-                    warn!("catch-up: sync to {} failed: {e}", label(nid));
+                    let streak = report.entry(nid).or_insert(0u32);
+                    *streak += 1;
+                    if *streak == 1 {
+                        warn!("catch-up: sync to {} failed: {e}", label(nid));
+                    } else {
+                        debug!(
+                            "catch-up: sync to {} still down ({streak} attempts): {e}",
+                            label(nid)
+                        );
+                    }
                     if let Some(h) = &health {
                         h.record_failure(nid);
                     }
