@@ -27,6 +27,10 @@ export default defineConfig({
     alias: {
       // The shared outl frontend library.
       "@outl/shared": shared,
+      // CSS resolution: upstream desktop styles use bare package imports;
+      // vite resolves them from the vendor tree, where node_modules does not
+      // exist \— map them to the frontend installs.
+      tailwindcss: fileURLToPath(new URL("./node_modules/tailwindcss/index.css", import.meta.url)),
       // Tauri IPC -> HTTP.
       "@tauri-apps/api/core": fileURLToPath(new URL("./shims/core.ts", import.meta.url)),
       "@tauri-apps/api/event": fileURLToPath(new URL("./shims/event.ts", import.meta.url)),
