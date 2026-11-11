@@ -41,6 +41,12 @@ pub struct AppState {
     pub workspace_guards: Arc<Mutex<Option<WorkspaceGuards>>>,
     /// Per-device HLC generator. Static for the process lifetime.
     pub hlc: HlcGenerator,
+    /// `[calendar] week_start` from the global config, read once at boot
+    /// and served to clients via `workspace_stats` (issue #94).
+    pub calendar_week_start: Option<outl_config::WeekStart>,
+    /// Automatic-backup supervisor cell; retargeted by the boot opener on
+    /// every successful workspace open.
+    pub backup_root: outl_actions::backup::BackupRoot,
     /// User preferences and last opened workspace path.
     pub settings: Arc<Mutex<Settings>>,
     /// Code-block runtimes built once at startup.

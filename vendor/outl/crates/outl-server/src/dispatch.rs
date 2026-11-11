@@ -319,6 +319,7 @@ fn workspace_stats(st: &AppState) -> outl_tauri_shared::WorkspaceSummary {
             storage_root,
             ready: true,
             ops_complete: !ws.booted_from_snapshot(),
+            week_start: st.calendar_week_start,
         },
         None => outl_tauri_shared::WorkspaceSummary {
             blocks: 0,
@@ -327,6 +328,7 @@ fn workspace_stats(st: &AppState) -> outl_tauri_shared::WorkspaceSummary {
             storage_root,
             ready: false,
             ops_complete: true,
+            week_start: st.calendar_week_start,
         },
     }
 }

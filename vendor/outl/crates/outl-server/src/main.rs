@@ -146,6 +146,8 @@ async fn main() -> anyhow::Result<()> {
         storage_root,
         workspace_guards,
         hlc,
+        calendar_week_start: global_cfg.calendar.week_start,
+        backup_root: outl_actions::backup::BackupRoot::new(),
         settings: Arc::new(Mutex::new(settings)),
         registry,
         iroh_transport,

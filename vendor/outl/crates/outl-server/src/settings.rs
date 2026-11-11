@@ -124,6 +124,9 @@ impl From<Config> for Settings {
 impl From<Settings> for Config {
     fn from(s: Settings) -> Self {
         Self {
+            // Display-only flag: the on-disk config is the source of truth
+            // (the server's DTO does not track it).
+            managed: outl_config::managed(),
             workspace: WorkspaceCfg {
                 last: s.last_workspace,
             },

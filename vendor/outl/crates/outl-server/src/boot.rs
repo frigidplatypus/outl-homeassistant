@@ -41,6 +41,10 @@ pub fn spawn_workspace_opener(state: Arc<AppState>, root: PathBuf) {
     // are how sync degrades when no process holds the endpoint). Created
     // here so the sweeper outlives transport wiring and covers every path.
     let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+    // Inert supervisor cell (headless parity with `outl serve`: no
+    // auto-backup pass is spawned); `open_workspace_at` retargets it so
+    // the signature contract holds.
+    let backup_root = state.backup_root.clone();
 
     thread::Builder::new()
         .name("outl-boot-opener".into())
@@ -52,8 +56,14 @@ pub fn spawn_workspace_opener(state: Arc<AppState>, root: PathBuf) {
             let actor = hlc.actor();
             let lru_cap = outl_config::load().storage.lru_cap;
 
-            let workspace = match open_workspace_at(actor, &hlc, &root, lru_cap, &workspace_guards)
-            {
+            let workspace = match open_workspace_at(
+                actor,
+                &hlc,
+                &root,
+                lru_cap,
+                &workspace_guards,
+                &backup_root,
+            ) {
                 Ok(w) => w,
                 Err(e) => {
                     warn!("workspace open failed for {}: {e}", root.display());
