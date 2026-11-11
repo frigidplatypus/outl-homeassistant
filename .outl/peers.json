@@ -1,0 +1,11 @@
+{
+  "peers": [
+    {
+      "node_id": "268deaa133fa579e741329691a1bbbe008baf1e9ba59489b2bb85e1abec491a8",
+      "alias": "jPhone",
+      "relay_url": "https://use1-1.relay.avelino.outl.iroh.link/",
+      "endpoint_addr": "eyJpZCI6IjI2OGRlYWExMzNmYTU3OWU3NDEzMjk2OTFhMWJiYmUwMDhiYWYxZTliYTU5NDg5YjJiYjg1ZTFhYmVjNDkxYTgiLCJhZGRycyI6W3siUmVsYXkiOiJodHRwczovL3VzZTEtMS5yZWxheS5hdmVsaW5vLm91dGwuaXJvaC5saW5rLyJ9LHsiSXAiOiIxMDAuMTEzLjEyMS4xMTg6NTA3MjEifSx7IklwIjoiMTcyLjE2LjMuMTQwOjUwNzIxIn0seyJJcCI6IjE5Mi4wLjAuMjo1MDcyMSJ9LHsiSXAiOiIxOTIuMC4wLjY6NTA3MjEifSx7IklwIjoiMjE2LjEzOC4yNS4yMTc6NTA3MjEifV19",
+      "added_at": "2026-08-26T17:57:25.408268394+00:00"
+    }
+  ]
+}

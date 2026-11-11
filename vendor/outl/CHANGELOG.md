@@ -6,7 +6,21 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 ## [Unreleased]
 
 ### Added
+- **The calendar week starts where you say it does** ([#94](https://github.com/outlmd/outl/issues/94)).
+  `[calendar] week_start = "monday" | "sunday"` in `~/.config/outl/config.toml` retitles and re-pads the grid on all three surfaces that draw one: the TUI sidebar, the desktop sidebar, and the phone's journal sheet.
+  Unset, each surface keeps the day it has always drawn — Monday on desktop and the TUI, Sunday on the phone — so an untouched config changes nothing; setting it makes all three agree.
+  A pure display preference: never an Op, never converges between devices, like every other preference in the file.
 
+- **An Excalidraw plugin**: a ` ```excalidraw ` fence renders the drawing inline, as SVG, hand-drawn strokes and all.
+  Three ways to point it at a scene: paste the **share link** from excalidraw.com and it works with no account at all, use an [Excalidraw+](https://plus.excalidraw.com) scene id with a token from the OS keychain, or paste a `.excalidraw` file, which needs no network.
+  A share link is end-to-end encrypted with the key in its URL fragment, so the plugin does what the web app does with WebCrypto and pako — AES-128 and DEFLATE, in plain JS, since the plugin runtime has neither.
+  That happens in the sync command rather than while rendering, so it costs about ¾ of a second once per change instead of on every repaint, and a scene over 32 KB compressed is declined with a way around it rather than freezing the app.
+  `excalidraw-scenes` writes your workspace's scenes into a page as ready-made fences; `excalidraw-sync` (also the ✏️ toolbar button) pulls them.
+  The renderer covers rectangles, diamonds and ellipses with their fills, lines, arrows and every arrowhead, freehand strokes, text, images and frames, in light and dark.
+  What it leaves out — elements past its cap, embeds, images over the cache budget — is named in the caption under the drawing, because a render that silently drops part of a scene looks exactly like a complete one.
+  `rich` descriptors are GUI-only, so the fence draws on desktop and mobile and stays as written text on the TUI.
+  A scene is data from someone else, so the renderer treats it that way: a `dataURL` has to be an inline `data:image/` (a remote one would make the webview fetch it on every repaint, a request the plugin's `network:` allowlist never sees), the page declares its own CSP since the desktop ships none, a payload is refused past 32 KB compressed **and** 256 KB decompressed (DEFLATE reaches 1029:1, so the first ceiling does not imply the second), and a field holding the wrong type draws a placeholder instead of taking the fence down with it.
+  It is also the largest example in `examples/`, kept as the template for a real integration: [docs](docs/plugin-examples/excalidraw.md), [README](examples/excalidraw/README.md).
 - **A task list on the desktop** ([#364](https://github.com/outlmd/outl/issues/364)).
   `g t`, or `Cmd/Ctrl+Shift+L`, opens the workspace's open `TODO` / `DOING` blocks, grouped by page, journal days named the way the journal names them.
   It lists the first 200 and shows the uncapped count beside them, so a workspace past the cap reads `200 of 1431 open` instead of looking complete.
@@ -58,8 +72,40 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
   A page property `alias:: Big Apple, NYC` now lists extra names, comma-separated. Every resolution surface matches them beside the title: `[[NYC]]` opens the New York page, `#nyc` and `@NYC` land there too, its backlinks collect all three spellings, and autocomplete finds it from any of them. The aliases ride the title's paths — one case-insensitive comparison in the resolver ladder, one `title → slug` map in the workspace index — so no client changes anything to benefit (RFC 0107).
   `outl doctor` reports alias names claimed by more than one page, so the shared spelling is visible instead of silently resolving to whichever match comes first.
 
+- **`ctx.net.fetch` can read a binary response**, through `encoding: "base64"`.
+  A body crosses into JS inside a JSON string, so bytes that are not valid UTF-8 could not survive the text read: it replaced each one with U+FFFD, irreversibly, which silently corrupted a cipher text, an image or a compressed stream rather than failing.
+  There was no way for a plugin to read one at all.
+  The response-size cap is still measured on the raw bytes, before encoding, so asking for base64 does not let a larger body through.
+  It does cost a third more memory to hold, since the base64 of N bytes is 4N/3 characters — the cap is on what the server may send, not on the representation.
+
 ### Fixed
 
+- **`ctx.storage` was unreachable from a plugin's `activate`, its content transformers and its sync transport**, with or without the `storage:local` permission.
+  A turn needs two things wired before the engine runs — the plugin's local KV and its keychain access — and four of the six entry points wired only the keychain: `load_plugin` (whose `engine.load` also runs `activate(ctx)`), `transform_block`, `sync_push` and `sync_pull`.
+  `ctx.storage.get` throws when it was never set up, using the same message it uses for a missing permission, so a transformer reading a cache its own command had written failed with "needs the `storage:local` permission" while holding exactly that permission.
+  An uncaught throw costs the whole descriptor, so the block then rendered as nothing and said nothing about why.
+  In `activate` it is worse: the throw fails the load outright, so a plugin that reads its own state on startup never registers at all.
+  A sync transport storing a cursor hit the same wall.
+  All six entry points now go through one `prepare_turn` / `finish_turn` pair, so a new one cannot half-arrive.
+  `finish_turn` also runs **before** the `?` on every fallible path: setting up the next turn overwrites the engine's KV from disk and clears its dirty flag, so a write made before a throw was *discarded*, not merely unsaved.
+- **`Tab` / `Shift+Tab` on the desktop kicked you out of edit mode** ([#477](https://github.com/outlmd/outl/issues/477)).
+  Indenting or outdenting the block you were typing in moved it, but the textarea closed and the selection stayed on whatever block had been selected before you started editing.
+  The very next keystroke then ran as a Normal-mode command against that stale selection instead of the block you were still looking at.
+  The moved block now stays selected and in edit mode on itself, with your caret where you left it, whether the move landed, was a no-op (the first block can't indent further), or failed outright.
+- **A deleted page stayed stuck in the trash after being reopened by its own slug** ([#473](https://github.com/outlmd/outl/issues/473)), most visible on the journal, which is reopened every day.
+  Page ids are deterministic, so deleting a page and reopening the same slug resolved to the same root, but `find_by_slug` only looks at live children of the workspace root, so it never saw that root sitting in the trash, and `open_or_create` fell through to a plain `Create`, which is a no-op for a node already in the tree.
+  The root stayed trashed forever: every edit on it was silently dropped as `NotInTree`, and a page reopened on a schedule re-stamped its template under a subtree nobody could edit, once per open.
+  `open_or_create` now notices a trashed deterministic root and revives it: the root moves back out of the trash, its pre-delete content is trashed individually rather than coming back attached (still recoverable, one entry per block), and the slug/kind/title properties are re-applied.
+  A revived journal is treated as a fresh daily, template stamp included.
+- **Pasting a link into a block showed nothing and then erased it** ([#488](https://github.com/outlmd/outl/issues/488)).
+  Copy a link out of an email — the clipboard holds the label with the address behind it — paste it into a block you are editing, and nothing appeared.
+  Leave the block and the link was gone from the `.md` too, with nothing on screen to say so.
+  The same thing happened to the first line of a pasted outline: the lines below it became blocks as expected, the first one did not.
+  A plain-text URL was fine, which is why this looked like a rich-clipboard problem and was not.
+  Both GUI clients hold the block you are typing in as a draft seeded once, so refreshing the outline was not enough — the editor stayed on the pre-paste text and committed *that* back over the paste on the next Esc, blur or tap away.
+  The paste now reports the block's new text and where the caret belongs in it, and both clients put the caret back where you pasted rather than at the end of the block, so a paste without formatting leaves your tail where it was.
+  The backend is the single owner of both: the merge can insert a separating space, so "where I pasted plus what I sent" is the wrong answer.
+  Credit to [@matthieu403](https://github.com/matthieu403) for the report, including the detail that made it findable: the link *was* briefly in the `.md`, and leaving the block took it out again.
 - **`outl page prop list` listed the wrong properties, in both directions.**
   It probed a hardcoded list of nine "well-known" keys instead of reading the page, so a page carrying `alpha::`, `due::`, `owner::` and `zeta::` listed **none** of them — and it listed `page-slug` / `page-kind`, which define the page and which `outl page prop set` refuses, inviting an edit that would rewrite the page's identity on the next projection.
   The comment justifying the probe said the tree exposed no per-node property iterator; it has for a long time, and the sibling `outl block prop list` was already using it.
@@ -72,6 +118,14 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
   The runner already has stable for the host, and that action's `targets:` input updates the host toolchain without adding the cross target.
   The CLI zip for the same triple shipped, because that job runs `rustup target add`.
   The desktop job does that now, so the next release attaches `outl-desktop-windows-aarch64-setup.exe`.
+
+- **A yank in the TUI no longer vanishes on a bare X11 session** ([#472](https://github.com/outlmd/outl/issues/472)).
+  On X11 the selection owner serves the clipboard, and the owner was a `Clipboard` built fresh for every yank and dropped right after `set_text` returned `Ok`.
+  With a window manager and no clipboard manager the text was gone while the status line still read `yanked N block(s) → clipboard`: `xclip -o -selection clipboard` failed with `target STRING not available`.
+  The TUI now keeps one handle for as long as it runs, and drops it after a failed write so the next yank reconnects.
+  It also drops the handle when the event loop ends, because a `static` is never dropped and `arboard` hands the selection to a clipboard manager only in `Drop`.
+  The text still ends with the process on such a session, which `docs/tui.md` says; with a clipboard manager a normal quit keeps it, and macOS keeps it regardless.
+  `yy` fills `CLIPBOARD` only, so a terminal that pastes the `PRIMARY` selection (urxvt on Shift+Insert) still does not see it.
 - **Two things the screenshots for [#417](https://github.com/outlmd/outl/pull/417) found, both in paint rather than in logic.**
   The desktop's `+ prop` affordance is a bare `+` where it floats over a block's first line.
   It is absolutely positioned at the right edge, so the word it spelled covered the last word of any line that reached there, which on a wide window is most of them.
@@ -102,6 +156,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
   Windows now asks the same question before the window is built.
   A missing runtime shows a message naming the Evergreen WebView2 runtime and Microsoft's download page, then exits with status 1.
   A PC that already has the runtime is unchanged, and so are macOS and Linux.
+- **Opening outl on Windows could still crash with the runtime installed, if WebView2 timed out creating its environment** ([OUTL-4](https://outl.sentry.io/issues/OUTL-4)).
+  `App::run` created the window from `tauri.conf.json` with no retry, so a transient `WindowsError(... ERROR_TIMEOUT ...)` — the kind boot-time contention (antivirus scan, a cold profile, a slow disk) produces — panicked the same way a missing runtime used to.
+  Windows now creates its window itself, retrying up to three times before falling back to a message box naming the WebView2 download, then exiting with status 1 instead of panicking.
+  A PC where webview creation already succeeds is unchanged, and so are macOS and Linux.
+  Follow-up on that retry ([OUTL-4](https://outl.sentry.io/issues/OUTL-4), [#478](https://github.com/outlmd/outl/pull/478)): each attempt now clears any leftover "main" window from the previous try before building again, so a failure mode that leaves one registered cannot turn the retry into a second, immediate `WindowLabelAlreadyExists` failure.
+  `build_main_window` also stopped hand-duplicating the window's title/size/resizable properties — it now builds from the same `tauri.conf.json` window entry Windows' config file marks `create: false`, so the two files cannot drift the way a hardcoded copy could.
 - **A page that had stopped syncing said nothing in the TUI until you tried to write to it.**
   Root `CLAUDE.md` invariant 8 refuses to overwrite a `.md` holding content that exists in no op, and that refusal freezes the page in *both* directions until `outl reconcile --ahead-of-log` runs: those lines never reach another device, and a peer's edits never reach this `.md`.
   The desktop and mobile render a banner for it.
@@ -123,11 +183,23 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 - **`outl-linux-x64.tar.gz` carried a glibc 2.39 floor it never needed**, so it died with `version GLIBC_2.38 not found` on Debian 12, Ubuntu 22.04 and RHEL 9 — the distros where someone downloads a tarball instead of using a package manager.
   A glibc-linked binary runs on the glibc it was built against or newer, never older, so the runner image *is* the compatibility floor.
   `build_desktop_linux` was pinned to Ubuntu 22.04 (glibc 2.35) for exactly this and said so in a comment; the CLI leg was on 24.04, which was an oversight rather than a decision.
-  Both Linux legs are on 22.04 now, and `docs/development.md` → Runner sizing owns the rule so the next bump is made on purpose.
+  Both Linux legs are on 22.04 now, and `docs/ci-and-release.md` → Runner sizing owns the rule so the next bump is made on purpose.
   The same floor applied to the Homebrew `x86_64_linux` bottle, which is the other thing that binary feeds.
 
 ### Changed
 
+- **A beta is cut nightly instead of on every push to `main`.**
+  `release.yml` fires at 06:00 UTC and a `gate` job asks whether anything landed in the preceding 24h, so an idle night costs nothing.
+  October 2026 produced 66 betas, 2.1 a day, each spending 15.3 minutes of macOS runner across the universal desktop bundle and the two CLI legs: 950 minutes, $76 of a $699.92 gross bill, for builds that were superseded within hours.
+  A `v*` tag still builds the moment it is pushed, and so does a manual run — **Actions → Release → "Run workflow"** is the way to get a beta right now, and it skips the gate.
+  What this costs you: `brew install outl-beta` and `scoop update` now track a day rather than a commit.
+- **`test (macos)` runs on pushes to `main`, not on pull requests.**
+  It was the single most expensive job in the repo (3,259 macOS minutes in October, 63% of all macOS spend, $260.75 gross) and across July–October, over 403 runs where both legs reached a conclusion, it caught **zero** failures `test (linux)` did not.
+  It failed alone twice, both in September, and both were test calibration rather than platform defects (fixed then in `085303b6` and `8f64fa4b`); the reverse happened once, with Linux catching what macOS passed.
+  That follows from what the legs run: `--exclude outl-mobile --exclude outl-desktop --exclude outl-tauri-shared` leaves one piece of macOS-specific code under test, `platform_host_id`, which shells out to `ioreg`.
+  A macOS-only defect now has a window of one merge, and the push-to-`main` run is what closes it.
+  **What this does not cover, and never did:** APFS is case-insensitive where ext4 is not, so a macOS-only slug collision is a real failure mode that no test here exercises — the macOS leg was not protecting against it on a PR either.
+  [`docs/ci-and-release.md` → Runner cadence](docs/ci-and-release.md#runner-cadence) carries the measurement and the gap.
 - **Property order has one owner, and it is written down** ([#285](https://github.com/outlmd/outl/issues/285)).
   outl renders `key:: value` lines alphabetically, reorders a hand-sorted file on the next projection, and that was never documented anywhere — the behaviour lived in eight copy-pasted `sort_by` calls, three of which explained the reason in their own words and disagreed.
   `outl_actions::tree::sort_in_presentation_order` is the one owner now; every surface calls it (the `.md` renderer, the outline DTO each GUI reads, the parsed outline the from-disk readers build, a backlink row's shallow leaf, the tree-derived index, the clipboard, `outl page prop list` and `outl block prop list`), and [`docs/markdown-format.md` → Property order](docs/markdown-format.md#property-order) says what the order is and why declaration order is not recoverable: `Op::SetProp` carries no slot, so the nearest thing available is each op's HLC, which is the order properties were last *edited* — a peer fixing one typo would reshuffle the block on every device.
@@ -366,6 +438,13 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
   `BlockRow.recursion.test.ts` now fails on the next one. It reads the JSX and asserts every declared prop is either forwarded or listed with a reason, because that is the defect's actual shape — rendering this component needs haptics, a Tauri bridge and a WKWebView-shaped textarea, and a test mocking all three would pin the mocks.
 
 ### Added
+- **Nix flake + home-manager module: install and configure outl declaratively.**
+  The flake builds `packages.outl` (CLI + TUI) and `packages.outl-desktop` (Tauri app) for `x86_64-linux`/`aarch64-linux` from source — no external inputs beyond the pinned `nixpkgs-unstable`, `flake-utils`, `rust-overlay`, and `home-manager`; CI builds them on every change ([#356](https://github.com/outlmd/outl/issues/356)).
+  `programs.outl` renders `~/.config/outl/config.toml` from typed options, can install the packages (desktop entry + icons included), and can run per-user background sync as a systemd user service.
+  Guide: [docs/nix.md](docs/nix.md).
+- **`managed = true` in `config.toml` makes a declarative config win.**
+  Every client skips its config rewrite when the directive is set, so the home-manager symlink survives `home-manager switch` and the desktop Settings modal disables Save and points at the declarative source.
+  Set `managed = false` to hand the file back to the clients.
 
 - **Mobile command palette, and one look across desktop and phone.**
   Type `>` in the phone's Search or Pages sheet to list actions (today, capture, tasks, reminders, calendar, sync, devices, plugins, settings, fold); a plain query shows matching actions under the pages, as the desktop palette does.

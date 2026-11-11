@@ -3,7 +3,9 @@ import { createEffect, onMount } from "solid-js";
 import { autoDeletePair, autoPairBracket } from "@outl/shared/autocomplete";
 import { detectFence } from "@outl/shared/highlight";
 import {
+  charOffsetToUtf16Offset,
   choosePasteRoute,
+  type PasteEditorUpdate,
   utf16OffsetToCharOffset,
 } from "@outl/shared/paste";
 import { readText as readClipboardText } from "@tauri-apps/plugin-clipboard-manager";
@@ -86,14 +88,25 @@ export function BlockEditor(props: {
     queueMicrotask(() => {
       textareaRef?.focus();
       autoSize();
-      // Apply pending caret intent (set by `EnterInsertAtEnd` etc.).
-      // We do it here, after focus, because the textarea ref is
-      // guaranteed populated by this point — `<Show>` mounted it
-      // synchronously and the microtask fence drained any pending
-      // Solid commits.
+      // Apply pending caret intent (set by `EnterInsertAtEnd`, or by
+      // the Tab / Shift-Tab handler below carrying a codepoint offset
+      // across the indent/outdent remount for #477). We do it here,
+      // after focus, because the textarea ref is guaranteed populated
+      // by this point: `<Show>` mounted it synchronously and the
+      // microtask fence drained any pending Solid commits.
+      //
+      // `intent !== null`, not `intent &&`: a numeric offset of `0`
+      // (caret at the very start) is falsy and would silently fall
+      // through to "do nothing" under the truthy check.
       const intent = appState.caretIntent;
-      if (intent && textareaRef) {
-        const pos = intent === "end" ? textareaRef.value.length : 0;
+      if (intent !== null && textareaRef) {
+        const length = textareaRef.value.length;
+        const pos =
+          intent === "end"
+            ? length
+            : intent === "start"
+              ? 0
+              : Math.min(charOffsetToUtf16Offset(textareaRef.value, intent), length);
         textareaRef.setSelectionRange(pos, pos);
         setAppState("caretIntent", null);
       }
@@ -146,7 +159,9 @@ export function BlockEditor(props: {
       }
       if (!clip) return;
       const caretChars = utf16OffsetToCharOffset(ta.value, ta.selectionStart ?? 0);
-      await props.cb.onPastePlain(props.blockId, caretChars, clip, ta.value);
+      applyPaste(
+        await props.cb.onPastePlain(props.blockId, caretChars, clip, ta.value),
+      );
       return;
     }
     // An open autocomplete popup owns the arrows / Enter / Tab / Esc
@@ -219,6 +234,18 @@ export function BlockEditor(props: {
     }
     if (e.key === "Tab") {
       e.preventDefault();
+      // Capture the caret before `commit()`: it flips `editingBlockId`
+      // to `null` (directly, or via the `onCommit` round-trip), which
+      // tears this component down. `onIndent` / `onOutdent` put the
+      // moved block straight back into edit mode (#477), mounting a
+      // fresh `<BlockEditor />` that reads this back out of
+      // `caretIntent` once it lands, so the user's caret survives the
+      // remount instead of resetting.
+      const ta = textareaRef;
+      const caretChars = ta
+        ? utf16OffsetToCharOffset(ta.value, ta.selectionStart ?? ta.value.length)
+        : null;
+      if (caretChars !== null) setAppState("caretIntent", caretChars);
       await commit();
       if (e.shiftKey) await props.cb.onOutdent(props.blockId);
       else await props.cb.onIndent(props.blockId);
@@ -301,12 +328,43 @@ export function BlockEditor(props: {
       ta.value,
       ta.selectionStart ?? 0,
     );
-    await props.cb.onPasteMarkdown(
-      props.blockId,
-      caretChars,
-      decision.text,
-      ta.value,
+    applyPaste(
+      await props.cb.onPasteMarkdown(
+        props.blockId,
+        caretChars,
+        decision.text,
+        ta.value,
+      ),
     );
+  }
+
+  /**
+   * Put the paste's result into the textarea the user is still typing
+   * in.
+   *
+   * The draft is seeded once per row and only `startEdit` re-seeds it
+   * (see `<BlockRow />`), so re-rendering the outline is not enough: a
+   * caret paste rewrote this very block, and a draft still holding the
+   * pre-paste string is what `commit()` writes back on the next Esc or
+   * blur — the paste disappears from the block and from the `.md`, with
+   * nothing said (issue #488).
+   *
+   * `ta.value` is written directly as well as through `setText`,
+   * because the caret has to move in the same frame: Solid's
+   * `value={props.text()}` binding lands in a later effect, and
+   * `setSelectionRange` against the stale value would clamp the caret
+   * to the old text's length.
+   */
+  function applyPaste(update: PasteEditorUpdate | null) {
+    if (!update) return;
+    const ta = textareaRef;
+    props.setText(update.text);
+    if (!ta) return;
+    ta.value = update.text;
+    ta.setSelectionRange(update.caret, update.caret);
+    autoSize();
+    // The caret may now sit inside a `[[…]]` the paste brought in.
+    suggest.refresh();
   }
 
   return (

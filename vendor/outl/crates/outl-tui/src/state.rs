@@ -204,17 +204,16 @@ pub(crate) enum Overlay {
     TemplatePicker(TemplatePickerState),
     /// Plugin settings: edit config + secret fields of installed plugins.
     PluginSettings(PluginSettingsState),
-    /// Reminders: every block in the workspace carrying a `remind::`,
-    /// grouped by next fire. Read-only inspection plus snooze / done —
-    /// the TUI deliberately **delivers** nothing (a terminal session
-    /// has no background presence), but it must still let the user see
-    /// and author what the GUI clients will deliver.
+    /// Reminders: every block carrying a `remind::`, grouped by next
+    /// fire. Snooze / done; `actions/reminders.rs` owns delivery.
     Reminders(RemindersState),
     /// Property editor for the selected block (or for the page): the
     /// discoverable counterpart to `:prop` / `:prop-page`.
     Properties(PropertiesState),
     /// Per-device pending and the merged edits log, with undo (`:sync`).
     SyncPanel(crate::actions::sync_panel::SyncPanelState),
+    /// What you have deleted, and the way back (`/trash`).
+    Trash(crate::actions::trash::TrashState),
 }
 
 /// Which set of properties [`Overlay::Properties`] is editing.
@@ -455,8 +454,8 @@ pub(crate) struct SearchHit {
     pub(crate) md_path: PathBuf,
     /// Snippet around the match.
     pub(crate) snippet: String,
-    /// Block index inside the parsed page (DFS preorder).
-    pub(crate) block_index: usize,
+    /// DFS path to the block, resolved after the page loads (#449).
+    pub(crate) block_path: Vec<usize>,
     /// Fuzzy score for ranking.
     pub(crate) score: i32,
 }
@@ -750,6 +749,12 @@ pub(crate) struct App {
     /// persists the new value back to `config.toml`. A pure display
     /// preference — it never goes through the op log.
     pub(crate) backlinks_newest_first: bool,
+
+    /// Which day the sidebar calendar grid starts on (issue #94).
+    /// Loaded from `[calendar] week_start` at boot; a pure display
+    /// preference, never an Op. The desktop and mobile mini-calendars
+    /// read the same field over the Tauri bridge.
+    pub(crate) calendar_week_start: outl_config::WeekStart,
 
     /// Left sidebar visible (`\`). Off by default; session only.
     pub(crate) show_sidebar: bool,

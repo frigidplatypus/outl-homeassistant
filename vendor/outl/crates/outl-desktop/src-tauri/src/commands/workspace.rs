@@ -39,6 +39,7 @@ pub(crate) fn set_workspace(
         &path,
         lru_cap,
         &state.workspace_guards,
+        &state.backup_root,
     )
     .map_err(|e| format!("open workspace at {}: {e}", path.display()))?;
 
@@ -137,6 +138,7 @@ pub(crate) fn current_workspace(state: State<'_, AppState>) -> Option<String> {
 /// to relocate a wait that is already short.
 #[tauri::command]
 pub(crate) fn workspace_stats(state: State<'_, AppState>) -> WorkspaceSummary {
+    let week_start = state.calendar_week_start;
     let guard = state.workspace.lock();
     let storage_root = state
         .storage_root
@@ -151,6 +153,7 @@ pub(crate) fn workspace_stats(state: State<'_, AppState>) -> WorkspaceSummary {
             actor: ws.actor.to_string(),
             storage_root,
             ready: true,
+            week_start,
             ops_complete: !ws.booted_from_snapshot(),
         },
         None => WorkspaceSummary {
@@ -159,6 +162,7 @@ pub(crate) fn workspace_stats(state: State<'_, AppState>) -> WorkspaceSummary {
             actor: state.hlc.actor().to_string(),
             storage_root,
             ready: false,
+            week_start,
             // No workspace, so nothing was withheld: zero is the whole
             // count. Labelling it partial would hedge about a number that
             // is exact.
@@ -183,6 +187,11 @@ pub(crate) fn update_settings(
     state: State<'_, AppState>,
 ) -> Result<Settings, String> {
     let mut guard = state.settings.lock();
+    // `managed` is not client-editable: pin it to the gate's authoritative
+    // verdict so a save can't clear the notice out of app state, and so the
+    // reply the frontend rehydrates from carries the real flag.
+    let mut next = next;
+    next.managed = outl_config::managed();
     *guard = next;
     settings::save(&state.app_config_dir, &guard).map_err(|e| format!("save settings: {e}"))?;
     Ok(guard.clone())

@@ -1,6 +1,22 @@
 name: Release
 
-# Every push to `main` produces a beta release automatically.
+# A beta release is cut **once a night**, and only when `main` moved.
+#
+# It used to be cut on every push to `main`. That produced 66 beta
+# releases in October 2026 (2.1 a day), and each one spends 15.3 minutes
+# of macOS runner — `build_desktop` (universal, 7.9 min) plus the two CLI
+# legs (3.7 min each). 950 macOS minutes a month, $76 of a $699.92 gross
+# bill, for betas that were superseded within hours and mostly never
+# downloaded.
+#
+# Nightly caps that at 31 runs a month and the freshness gate below drops
+# the nights nobody pushed, so the real figure tracks days-with-commits
+# rather than commits.
+#
+# **Need a beta right now?** Run the workflow by hand: Actions → Release →
+# "Run workflow". That path is unchanged and still cuts a real beta off
+# whatever ref you pick. A GA tag (`v*`) is also unchanged and still
+# builds the moment it is pushed — neither goes through the gate.
 #
 # - Tag:     `v<workspace.version>-beta.<run_number>` (e.g. `v0.1.0-beta.42`).
 # - Binary:  reports the full beta version (workflow patches Cargo.toml
@@ -58,8 +74,13 @@ name: Release
 # ------------------------------------------------------------------
 # Crash-reporting secrets (RFC 0377).
 #
-#   OUTL_SENTRY_DSN_CLI       repository secret. DSN of the `outl-cli`
-#                             Sentry project
+#   OUTL_SENTRY_DSN_CLI       repository secret. DSN baked into the `outl`
+#                             binary. `outl` with no subcommand is the TUI
+#                             and reports as `tui@<version>`, so both the
+#                             CLI and TUI surfaces land in the `outl`
+#                             project (issue ids OUTL-*), same as desktop.
+#                             Symbol upload uses that project, not a
+#                             separate `outl-cli`
 #   OUTL_SENTRY_DSN_DESKTOP   repository secret. DSN baked into the desktop
 #                             binary. Events land in the `outl` project
 #                             (issue ids OUTL-*) with release
@@ -98,9 +119,14 @@ name: Release
 # ------------------------------------------------------------------
 
 on:
+  # No `branches: [main]` here on purpose — see the header. `tags` stays,
+  # so a GA release still builds the instant the tag lands.
   push:
-    branches: [main]
     tags: ["v*"]
+  schedule:
+    # 06:00 UTC / 03:00 BRT — after the working day, so a night's betas
+    # carry the whole day's merges in one build instead of 2.1 of them.
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       # Runs every build and every check against the branch it is
@@ -126,8 +152,112 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The freshness gate for the nightly cron, and nothing else.
+  #
+  # A tag push and a manual dispatch both pass straight through: they are
+  # deliberate acts and the caller already decided. Only `schedule` is
+  # asked whether `main` actually moved, because a cron that fires on an
+  # idle repo rebuilds the previous commit and spends 15.3 macOS minutes
+  # to publish a beta identical to last night's.
+  #
+  # The question is "did anything land in the last 24h", not "is HEAD the
+  # commit the last beta was cut from". The second reads more precise and
+  # is worse here: it needs the newest `v*-beta.N` tag, and the tags are
+  # lightweight, so `--sort=-creatordate` orders them by *commit* date
+  # (wrong after any rebase) and `--sort=-version:refname` has to compare
+  # `beta.286` against `beta.99` as numbers, which is a property of git's
+  # version sort rather than something this workflow should bet a release
+  # on. The window costs at most one redundant beta a month when a commit
+  # lands within minutes of the cron, and never a missed one — the error
+  # is in the harmless direction.
+  #
+  # Every downstream job already gates on `needs.prepare.result ==
+  # 'success'` or on `create_release`, so skipping `prepare` skips the
+  # whole graph without a second `if` per job.
+  gate:
+    name: Should we cut a beta?
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      contents: read # checkout
+      actions: read # `gh run list` against `ci.yml`
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Deep enough to answer a 24h question; a full clone of this
+          # history to count a handful of commits is not worth the fetch.
+          fetch-depth: 100
+
+      - id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${GITHUB_EVENT_NAME} run — both gates below apply only to the nightly cron."
+            exit 0
+          fi
+
+          # Gate 1: did anything land worth building?
+          COUNT=$(git rev-list --count --since="24 hours ago" HEAD)
+          if [[ "${COUNT}" -eq 0 ]]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No commits in the last 24h — skipping tonight's beta. Use Run workflow to force one."
+            exit 0
+          fi
+
+          # Gate 2: does CI already know this tree is broken?
+          #
+          # This workflow runs no tests of its own on purpose — `ci.yml`
+          # owns fmt/clippy/test/docs and the frontend suite. Without this
+          # gate the nightly spends 9 to 34 minutes across ~20 build legs
+          # (macOS, Linux x64/arm64, Windows x64/arm64, Android) producing
+          # a beta from a tree whose tests are red.
+          #
+          # `cancelled` is not an answer: `ci.yml` cancels in progress per
+          # ref, so a run superseded by the next push says nothing about
+          # either commit. Take the newest *conclusive* run instead.
+          #
+          # Not pinned to HEAD's sha on purpose: `ci.yml` ignores
+          # `docs/**`, so a docs-only HEAD has no run of its own and an
+          # exact-sha gate would block every nightly until the next code
+          # commit landed.
+          #
+          # What this does NOT cover: if HEAD's own CI is still running at
+          # 06:00 UTC, the newest conclusive run belongs to an earlier
+          # commit, and a green answer there is an answer about that
+          # commit. The cron sits after the working day so that window is
+          # small, and a wrong green costs one beta, not a bad GA.
+          VERDICT=$(gh run list --workflow=ci.yml --branch main --limit 20 \
+            --json status,conclusion \
+            --jq 'map(select(.status == "completed"
+                   and (.conclusion | IN("success", "failure", "timed_out"))))
+                  | .[0].conclusion // "unknown"')
+
+          case "${VERDICT}" in
+            success)
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::${COUNT} commit(s) in the last 24h and CI on main is green — cutting tonight's beta."
+              ;;
+            unknown)
+              # Unknown is not red. Refusing here would turn any gap in CI
+              # history into a silent release freeze, which is the worse
+              # failure of the two.
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::${COUNT} commit(s) in the last 24h, but no conclusive ci.yml run found on main. Proceeding: unknown is not red."
+              ;;
+            *)
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::CI on main concluded ${VERDICT} — skipping tonight's beta so the builders are not spent on a red tree. Fix main, or use Run workflow to force one."
+              ;;
+          esac
+
   prepare:
     name: Compute version
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     outputs:
       base: ${{ steps.compute.outputs.base }}
@@ -198,6 +328,21 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "${TAG}"
           git push origin "${TAG}"
+
+  prune_betas:
+    name: Prune old beta tags
+    needs: tag
+    # Runs the moment the tag exists, rather than when the last build
+    # finishes 9 to 34 min later (measured across recent runs).
+    # Deliberately has no `if:` and takes no
+    # inputs: `tag` already encodes both conditions worth checking. It
+    # only runs on `create_tag == 'true'`, and `prepare` forces that
+    # false for a dry run, so a skipped `tag` skips this too.
+    #
+    # It cannot be `on: push: tags:` inside the prune workflow itself,
+    # because the tag above is pushed with `GITHUB_TOKEN` and a ref
+    # pushed by that token triggers nothing.
+    uses: ./.github/workflows/cleanup-tags.yml
 
   create_release:
     name: Create draft release
@@ -447,7 +592,7 @@ jobs:
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: outl
-          SENTRY_PROJECT: outl-cli
+          SENTRY_PROJECT: outl
         run: |
           set -uo pipefail
           if [[ -z "${SENTRY_AUTH_TOKEN}" ]]; then
@@ -683,10 +828,9 @@ jobs:
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           rustup target list --installed
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: latest
+      # No `linux-deps`: this job builds the universal dmg on macOS.
+      - name: Set up the Tauri build
+        uses: ./.github/actions/setup-tauri-build
 
       - name: Patch workspace version to ${{ needs.prepare.outputs.version }}
         shell: bash
@@ -708,9 +852,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-universal-apple-darwin-desktop-release-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install frontend dependencies
-        run: bun install
 
       - name: Build universal dmg
         # `--target universal-apple-darwin` triggers Tauri's universal
@@ -943,24 +1084,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # `linux-deps`: the bundler links these into the AppImage and
+      # references them from the .deb/.rpm dependency lists. This used to
+      # be a second copy of `desktop.yml`'s apt list, byte for byte.
+      - name: Set up the Tauri build
+        uses: ./.github/actions/setup-tauri-build
         with:
-          bun-version: latest
-
-      # Tauri 2 system deps. Same set the `desktop.yml` CI job installs;
-      # the bundler links these into the AppImage and references them
-      # from the .deb/.rpm dependency lists.
-      - name: Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libsoup-3.0-dev \
-            patchelf
+          linux-deps: "true"
 
       # The AppImage's launcher is not ours, and it is not stripped either.
       # Tauri copies `AppRun-<arch>` from its tool cache into the AppDir
@@ -1016,9 +1146,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-${{ matrix.target }}-desktop-release-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install frontend dependencies
-        run: bun install
 
       - name: Build the Linux desktop binary
         # Compile only. Bundling happens after the symbol upload and the
@@ -1282,10 +1409,9 @@ jobs:
           rustup target add ${{ matrix.target }}
           rustup target list --installed
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: latest
+      # No `linux-deps`: this job builds the NSIS installer on Windows.
+      - name: Set up the Tauri build
+        uses: ./.github/actions/setup-tauri-build
 
       - name: Patch workspace version to ${{ needs.prepare.outputs.version }}
         shell: bash
@@ -1305,9 +1431,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-${{ matrix.target }}-desktop-release-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install frontend dependencies
-        run: bun install
 
       - name: Build NSIS installer
         working-directory: crates/outl-desktop

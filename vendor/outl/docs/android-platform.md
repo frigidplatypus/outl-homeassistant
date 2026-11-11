@@ -332,15 +332,28 @@ The job is best-effort: `publish_release` waits for it but does not require its 
 **What best-effort costs, which took three releases to notice.**
 The draft flips to published with or without the APK, and a published release is immutable, so "Re-run failed jobs" on the Android job arrives too late to attach anything.
 It used to answer with a bare `HTTP 422: Cannot upload assets to an immutable release`, which reads like a token problem; the upload step now checks `isDraft` first and says what it actually means.
-The only route to an APK on the release is a new beta, and since a push to `main` cuts one, that is usually the next commit.
+The only route to an APK on the release is a new beta, so it is the next nightly — or a manual `release.yml` dispatch if you do not want to wait.
 
 Worse, a job's implicit `success()` reads the whole ancestor tree rather than its direct `needs`, so a failed Android build also skipped `update_tap` — through a `publish_release` that had succeeded.
 v0.12.0-beta.207 shipped that way and left `Formula/outl-beta.rb` on `.206`, so `brew upgrade outl-beta` served the previous binary and nothing went red.
 `update_tap` carries `!cancelled()` now, the same guard `publish_release` already had for the same reason.
 
-`cleanup-tags.yml` is the third thing standing on that decision and is deliberately left alone.
-It gates on `workflow_run.conclusion == 'success'`, so an Android failure skips the prune too, but its prune recomputes "keep the 2 newest betas per base version" from scratch, so the next green release catches up.
-A tap bump does not recompute: it patches the version of the release that triggered it, and a release it sat out stays skipped.
+`cleanup-tags.yml` used to be the third thing standing on that decision, and was deliberately left alone.
+The argument was that its prune recomputes from scratch, so the next green release catches up.
+A tap bump cannot: it patches the version of the release that triggered it, and a release it sat out stays skipped.
+
+That argument had a premise worth stating out loud: **a next green release exists.**
+It stopped being true.
+`Release` concludes `failure` when any of its ~21 jobs fails, and `publish_npm` plus `publish_crates` have failed on essentially every run since 2026-10-19 while the betas themselves kept tagging and publishing normally.
+The last `Release` to conclude `success` was 2026-10-20, and the 30 runs after it are 16 failures and 14 cancellations.
+The gate held shut for 25 consecutive runs.
+The beta bucket reached 101 tags, with the script meant to cap it at 2 sitting there correct and never executed.
+Self-healing that needs a green run is not self-healing in a repo that has not had one in a week.
+
+So the prune no longer asks.
+`release.yml` calls `cleanup-tags.yml` from `needs: tag`, which is unreachable unless the tag landed, and a later Android failure is never consulted.
+The lesson that survives is the one about `update_tap`, not the exemption: **a retry argument is only as good as the thing it retries on.**
+"The next run fixes it" needs a next run, and one permanent failure anywhere in a 21-job workflow removes every one of them at once.
 
 The NDK is pinned to `27.1.12297006` in CI, matching what the project builds against locally.
 The runner image does not ship that revision, so every run downloads ~700 MB, and a truncated transfer is routine.

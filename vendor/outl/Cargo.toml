@@ -5,6 +5,7 @@ members = [
     "crates/outl-md",
     "crates/outl-actions",
     "crates/outl-sync-iroh",
+    "crates/outl-server",
     "crates/outl-config",
     "crates/outl-exec",
     "crates/outl-import",

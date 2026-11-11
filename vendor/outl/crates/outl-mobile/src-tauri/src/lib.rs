@@ -95,8 +95,9 @@ use crate::commands::{
 };
 use crate::commands::{
     device_activity, drain_capture_inbox, export_markdown, journal_days_with_content,
-    list_action_support, list_open_tasks, list_shortcut_bindings, merged_edits, page_timeline,
-    resolve_embeds, run_auto_run_blocks, run_code_block, undo_merged_edit,
+    list_action_support, list_open_tasks, list_shortcut_bindings, list_trash, merged_edits,
+    page_timeline, resolve_embeds, restore_trash_entry, run_auto_run_blocks, run_code_block,
+    undo_merged_edit,
 };
 use crate::plugin_service::spawn_plugin_service;
 use crate::state::AppState;
@@ -289,6 +290,10 @@ pub fn run() {
             // renders today's journal (#107). No `[calendar] timezone` → OS
             // local, as before.
             outl_actions::clock::init(global_cfg.calendar.timezone.as_deref());
+
+            // `[calendar] week_start` cached for `workspace_stats` (issue #94).
+            // `None` keeps the phone's historical Sunday.
+            let calendar_week_start = global_cfg.calendar.week_start;
             let storage_root = resolve_storage_root(&local_dir, persisted.as_deref());
             std::fs::create_dir_all(&storage_root)?;
             info!("workspace root {}", storage_root.display());
@@ -299,9 +304,19 @@ pub fn run() {
             // workspace is open. Written only by `open_workspace_at`.
             let workspace_guards: Arc<Mutex<Option<WorkspaceGuards>>> = Arc::new(Mutex::new(None));
 
+            // One backup thread for the process, aimed at the workspace
+            // by the opener once the open succeeds.
+            let backup_root = outl_actions::backup::BackupRoot::new();
+            outl_actions::backup::spawn_auto_pass(
+                backup_root.clone(),
+                global_cfg.backup.enabled,
+                global_cfg.backup.interval_minutes,
+            );
+
             spawn_workspace_opener(
                 workspace.clone(),
                 workspace_guards.clone(),
+                backup_root,
                 storage_root.clone(),
                 hlc.clone(),
                 app.handle().clone(),
@@ -357,6 +372,7 @@ pub fn run() {
                 history: Mutex::new(std::collections::HashMap::new()),
                 backlink_index: Arc::new(Mutex::new(None)),
                 projection_writer,
+                calendar_week_start,
             });
             app.manage(plugins);
             app.manage(PendingDeepLink(Mutex::new(None)));
@@ -429,6 +445,10 @@ pub fn run() {
             list_action_support,
             // Page history out of the op log (read-only). New on mobile.
             page_timeline,
+            // Trash: registered, no sheet in front of it yet
+            // (`Capability::Trash`).
+            list_trash,
+            restore_trash_entry,
             device_activity,
             export_markdown,
             merged_edits,

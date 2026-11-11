@@ -58,8 +58,14 @@ This section captures only the **architectural / TUI-specific behaviour** a cont
   Status flips to `yanked … (clipboard unavailable)` on headless / no-display environments — the in-app yank register still works.
 - **`yy` / `Y` / Visual `y` write to the OS clipboard.**
   Every yank writes clean canonical outl markdown to the OS clipboard via two paths in `actions/yank.rs`:
-  1. `arboard` — direct X11 / Wayland / macOS clipboard API (requires a display server).
+  1. `arboard` — direct X11 / macOS clipboard API (requires a display server).
+     Built without its `wayland-data-control` feature, so a Wayland session goes through XWayland.
   2. OSC 52 escape sequence (`\x1b]52;c;<base64>\x07`) — works over SSH, inside tmux, and in Chrome OS Crostini where `arboard` has no display server to talk to.
+  The `arboard` handle is one process-wide `static` (`CLIPBOARD` in `actions/yank.rs`), not a `Clipboard` per yank.
+  On X11 the handle *is* the selection owner, so dropping it right after `set_text` lost the text on sessions without a clipboard manager.
+  A failed `set_text` drops the cached handle so the next yank reconnects (dead display connection).
+  `run_with_theme_override` calls `release_os_clipboard` when the event loop ends, because a `static` is never dropped and `arboard` hands the selection to a clipboard manager only in `Drop`.
+  A panic or a fatal signal skips it; the panic hook must not take that lock, since the panic may have happened while it was held.
   The status line reads `yanked N block(s) → clipboard` on success and `yanked N block(s) (clipboard unavailable)` when both paths fail.
   The yank register is always populated regardless.
 - **`p` / `P` are OS clipboard paste, not yank-register paste.**
@@ -104,6 +110,45 @@ This section captures only the **architectural / TUI-specific behaviour** a cont
 - **Visual range reorder (`Alt+↑` / `Alt+↓`).**
   `move_{up,down}_visual_range` drag the whole selection among its siblings — mirror of the single-block `Alt`+arrows in Normal (the plain arrows extend the range, so `Alt` is what separates reorder from grow).
   They loop `move_{up,down}_at_path` (`lo→hi` for up, `hi→lo` for down) and follow the selection one row; if the leading block can't move (already first/last sibling) the op aborts before the rest of the range scrambles against itself.
+
+### Undo / redo (`u` / `Ctrl+R`)
+
+`actions/history.rs` keeps two bounded `Vec<HistorySnapshot>` stacks, each snapshot a whole-page `ParsedPage` clone plus the `view_path` it came from.
+
+One contract, and it was the alternative:
+
+- **Ask whether the top snapshot applies here *before* touching either stack.**
+  `restore_snapshot` takes its snapshot by value and refuses one belonging to another view, so the pop that used to precede it destroyed the entry ([#430](https://github.com/outlmd/outl/issues/430)).
+  `redo` had the same shape, and gained a snapshot of a page nothing had undone.
+  Nothing clears these stacks on navigation, so repeated presses on the wrong page drained the user's history with a status line that said `skipped`.
+  `top_applies_here` is the single owner of that question; both callers ask it, and the pop is `expect`-safe behind it.
+  The regression net is `undo_on_another_page_keeps_the_snapshot`, `repeated_undo_on_another_page_never_drains_the_stack`, `redo_on_another_page_keeps_the_snapshot`, plus `undo_on_its_own_page_still_consumes_the_snapshot` so the guard cannot pass by blocking everything.
+
+- **A cross-page op snapshots the page it changes, not the page on screen.**
+  `snapshot_page_for_undo(path, page)` is the sibling of `snapshot_for_undo`, and `apply_to_backlink_source` calls it once for all seven structural ops reachable from the backlinks panel; `toggle_todo_backlink` calls it on its own path.
+  The snapshot carries the *source* page's path, so `top_applies_here` only lets it be restored once the user opens that page — pressing `u` while still on the referencing page reports `no undo for this page` and keeps it.
+  This is why the guard above had to land first ([#431](https://github.com/outlmd/outl/issues/431) depends on [#430](https://github.com/outlmd/outl/issues/430)).
+  `toggle_todo_backlink` used to document the opposite ("undo in this view shouldn't silently flip TODOs in a different file"), which was correct while a popped snapshot was applied blind.
+  That is root `CLAUDE.md` invariant 10 item 4: the exemption outlived its premise.
+  `selected` / `cursor_col` are zeroed, because they index a page the user was not looking at.
+
+**Still not covered**: `commit_insert` on an `EditTarget::SourcePage` records nothing and is the last instance of the old reasoning. Neither `undid` nor `redid` says *what* came back, which is [#438](https://github.com/outlmd/outl/issues/438).
+
+### Trash (`/trash`)
+
+`actions/trash/` lists what has been deleted and puts one back; `view/trash.rs` draws it.
+Its own pair rather than arms in `view/overlays.rs` / `actions/overlay.rs`, both at their frozen size baselines.
+
+Six contracts, each of which was the alternative:
+
+- **Opened from the command registry, not a chord.** One `TrashCommand` registration serves `/trash` and `:trash`, the surface `:sync` and `/template` already use, so it shows up in the slash menu with a description. A chord needs an `Action` variant and `outl_shortcuts::support`'s exhaustive `match` is frozen at its baseline; the three per-client verdicts it would force are the mechanism invariant 12 exists for, never the reason to skip it.
+- **Both halves flush first.** The listing reads the workspace **tree** and this client edits an in-memory AST, so without `flush_pending_save()` a block deleted a keystroke ago is missing from the trash the user is looking at — the same trap `open_properties` documents. The restore flushes for the other direction: a pending save renders the AST over the `.md` the re-projection is about to write.
+- **`Enter` on a deleted *page* row refuses.** `open_page_by_slug` reads a missing `.md` as "new page", seeds `title:: <slug>` and reconciles it, and `ensure_page_root_in_tree` then lifts the root out of the trash while the sidecar-less matching orphan-trashes each child on its own — so a key documented as read-only undid the delete and turned one trash row into forty. Reviving a page deliberately belongs to `page::open_or_create` (`page/revive.rs`), reached by opening the page *by name*; the nudge names that route instead of performing it. `enter_on_a_deleted_page_row_never_brings_the_page_back` asserts on the workspace, so a reworded refusal cannot make it pass.
+- **The restore runs the whole `commit_page` pipeline**, not step 5 alone (`RestoreCommit`, the sibling of `CaptureCommit`). The undo snapshot is keyed to the **landing** page's path, not the open view's, because a restore can land on a page the user is not looking at — the cross-page rule `snapshot_page_for_undo` owns. Skipping it meant `u` after a restore applied the landing page's previous snapshot, re-trashing the block and reverting an unrelated edit.
+- **A withheld projection is classified, and only a *cross-page* one is announced here.** `ProjectionRefusal::from_error` splits it, the same classifier `loading.rs` asks: `Retryable` is a `tracing::warn!` and nothing else (toasting it put a permissions error in the same voice as a frozen page), and `AheadOfLog` reaches the user. For the page **on screen** that is the persistent banner below, re-derived by `load_current` — so this path stays quiet. Only a restore into a page the user is *not* looking at gets a toast, because the banner's surface cannot reach it, and every word in it is `refusal::ahead_of_log_notice`'s.
+- **The refusal is the backend's sentence, and it can arrive twice.** The row's own `refusal` is a snapshot of a verdict that reads the live tree, so `r` can be declined on a row that looked restorable. `trash::restore` re-asks `refusal_for` and its answer is the *same* string, which lands on the overlay's status line while the list re-reads itself. Nothing here phrases a refusal.
+
+Recorded as `Capability::Trash` → `Full` on the TUI column; mobile is the one client left without a surface.
 
 ### Properties (`g p`)
 
@@ -152,6 +197,12 @@ TUI-specific contracts worth remembering:
   Cursor at the start empties the head and pushes the whole line down into the sibling — "open an empty block above".
   The Insert-mode commit path also drains `pending_reload` (peer-ops poller held it back during the edit).
 - **`Backspace` on an empty block deletes the block** and moves selection to the previous one — the only structural mutation that can happen from Insert.
+- **A `Char` arm that writes text asks `input::is_typed_text(key.modifiers)` first.**
+  crossterm reports `Ctrl+W` as `Char('w')` plus `CONTROL`, so an arm matching `Char(ch)` and inserting it turns the whole readline set (`Ctrl+A/E/W/U/K/B/F`) into literal letters in the block ([#429](https://github.com/outlmd/outl/issues/429)).
+  Six arms write text and all six ask: the Insert text arm plus the five overlay query handlers in `input/overlay.rs`.
+  The predicate is an **allowlist** (`SHIFT` only), so a modifier this crate has not seen yet reads as a chord rather than as text: guessing wrong that way drops a keystroke the user can see, guessing wrong the other way edits their notes.
+  It is deliberately placed *below* the modifier-specific arms (`Ctrl+T`, `Ctrl+Enter`), which still match first.
+  A rejected chord currently falls through to `_ => {}` and says nothing, which is [#436](https://github.com/outlmd/outl/issues/436), not this.
 - **Autocomplete triggers** are pure trigger-detection inside the buffer (`[[`, `#`, `((`, `/`); they own the keystream while their popup is open.
   See `actions/autocomplete.rs` for the trigger detector contract.
 - **Drag-and-drop file upload (`actions/paste.rs`).**
@@ -227,6 +278,64 @@ TUI-specific contracts worth remembering:
   Reflowing just carries the cursor onto its wrapped visual row: the char offset was already consumed turning it into a span, so there's nothing left to desync.
   The earlier "cursor rows pass width `0`" workaround was the actual #99 regression: the selected block stayed on one overflowing line and only wrapped once the cursor left it (`viewing mode won't wrap until I navigate away`).
   `text_width == 0` is still the "don't wrap" sentinel, but only headless renders pass it now.
+
+## Overlay list scrolling
+
+`view/overlays.rs`'s `scroll_to_keep_visible(selected, visible)` is the one owner of a list popup's vertical offset, and both the template picker and the reminders list call it.
+
+Two bugs it replaced, in one expression:
+
+- **`Paragraph::scroll` takes `(Vertical, Horizontal)`.** Both overlays passed `(0, selected - 5)`, so they scrolled **sideways**: rows slid out of the card while the selected row stayed below the bottom edge ([#445](https://github.com/outlmd/outl/issues/445)). `ratatui-widgets`' own doc flags the order as the exception to the crate's convention, which is how two call sites got it wrong and three others (the slash palette, plugin settings) got it right.
+- **The offset has to come from the viewport height.** `selected > 5` scrolled a 20-row popup that had room to spare, and under-scrolled a 3-row one. The offset is now the smallest that puts `selected` on the last visible row, zero while it already fits.
+
+`u16::try_from(...).unwrap_or(u16::MAX)` rather than `as u16`, so a list longer than 65,535 rows clamps instead of wrapping to the top.
+
+## Empty states
+
+Two screens rendered nothing where they had something to say ([#448](https://github.com/outlmd/outl/issues/448)).
+
+- **`view/outline.rs`'s `starter_hint`** draws one line under the lone bullet of a brand-new page.
+  Journal-first means the product's first screen is today's journal, and a fresh one is seeded with a single empty bullet (`actions/lifecycle/loading.rs`), so a new install opened on a box titled `Outline` holding `- ` and naming no key — while every overlay in this crate already had considered empty copy.
+  It is **one line, not a modal**: the desktop's two-step first run does not translate here, where the shell is itself a surface and `outl init` already prints.
+  Gated on exactly one blank block and suppressed in Insert, so it cannot shift a row under the caret.
+  It is not a `block_starts` entry — there is no block there to click.
+- **`view/backlinks.rs`'s `empty_section_notice`** distinguishes "no backlinks" from "not known yet".
+  The section returned nothing while the background index was still building, so on a large workspace that was indistinguishable from a page with zero backlinks for seconds.
+  `App::has_pending_backlink_index` already answered it and no view asked.
+  The `show_backlinks` toggle wins over both, so `B` off still means no section.
+
+Both decisions are pure and tested on their own, **plus** a render-path test each, because the pure tests pass whether or not the renderer calls them. [`UX.md` → Never block a keystroke](../../UX.md#2-never-block-a-keystroke) owns the general rule for the second one: work landing after the first paint shows its own placeholder in its own section.
+
+### Toasts size to their message
+
+`view/toasts.rs` cards are bottom-right, newest on top, and **grow vertically** up to `MAX_BODY_LINES` (4) body rows.
+
+Three contracts:
+
+- **The card height is derived, not constant.** The stack walk tracks the bottom edge and subtracts each card's own height, because a fixed `TOAST_HEIGHT` is what made a long message unrenderable in the first place ([#435](https://github.com/outlmd/outl/issues/435)).
+  A one-row card inside 50 cells cut `reconcile failed: {e}` at the border with no ellipsis, so the path or errno — the only part worth reading — was the part dropped.
+- **`wrap_message` is word-based with a hard-break fallback**, since the errors this channel carries are mostly paths with no spaces to break on.
+  It is pure and tested on its own, and a render-path test (`a_long_error_reaches_the_screen_instead_of_stopping_at_the_border`) pins that `render_toasts` actually calls it: the pure tests pass either way, so dropping the call would otherwise go unnoticed.
+  That test asserts on the message's **tail**, because a 50-cell card already showed the first ~45 columns.
+- **`overlays::truncate` is not reused for the elided row.** It answers "is this longer than `max`"; the question here is "was anything dropped", and a row landing exactly on `width` still has to carry the `…` or a clipped error reads as a complete one.
+
+The icon sits on the first row and continuations indent to the text column, so a wrapped error reads as one message rather than four.
+
+## Workspace search reads the index
+
+`refresh_search` (`actions/overlay.rs`) filters `App::index`, which `spawn_index_rebuild` builds once over the whole workspace on a worker thread.
+
+It used to walk `pages/` and `journals/`, read every `.md` and re-parse it **per keystroke**, on the event loop ([#449](https://github.com/outlmd/outl/issues/449)).
+
+Three contracts:
+
+- **`BlockIndex::search_text` is deliberately not the source.** It matches by substring; this box and the `((` autocomplete both fuzzy-match, so reusing it would have traded match quality for the speed. `iter_blocks` is the same data with `crate::fuzzy::fuzzy_score` kept on top.
+- **`iter_blocks` is explicitly unordered**, so the sort settles ties on `md_path` then `block_path`. Without that the hit list reshuffles between index rebuilds; pinned by `the_hit_order_is_stable_across_rebuilds`.
+- **`SearchHit` carries `block_path`, not a flat index**, and `jump_to_search_hit` resolves it with `index_for_path` *after* `load_current`. A flat preorder index cannot come from the block index, and it goes stale when the page changed between the search and the jump.
+
+`the_search_reads_the_index_not_the_filesystem` deletes `pages/` after indexing: a filesystem-backed search returns nothing from there, so the test fails if the source regresses.
+
+**Not a bug, and worth not re-filing**: `max_depth(1)` in `WorkspaceIndex::build` is correct. `slugify` folds `/` away, so `[[os/linux]]` is `pages/os-linux.md` — the namespace is a slug convention and `pages/` is flat. Measured: zero subdirectories under `pages/` on a 2,874-page workspace.
 
 ## Reuse across UI surfaces (Tauri, mobile)
 
@@ -304,11 +413,18 @@ reach different verdicts.
 
 Four contracts, each of which was the alternative:
 
-- **The notice is persistent.** `App::md_ahead_of_log` drives a banner
-  above the outline (`view/ahead_of_log_banner.rs`), not a status-line
-  message and not a toast. Nothing clears this condition on its own, so
-  a message that scrolls away is the same silence with a delay
+- **The notice is persistent, for the page on screen.** `App::md_ahead_of_log`
+  drives a banner above the outline (`view/ahead_of_log_banner.rs`), not a
+  status-line message and not a toast. Nothing clears this condition on its
+  own, so a message that scrolls away is the same silence with a delay
   ([#292](https://github.com/outlmd/outl/issues/292)).
+  **Scope matters, because one surface cannot answer for every page.** This
+  banner says "the page you are reading has stopped syncing" and cannot name
+  a different one. A write that freezes a page the user is *not* looking at —
+  only `trash`'s restore does this today — has no banner to appear on, so it
+  toasts instead (`actions/trash/mod.rs`). That is not a second opinion about
+  where the notice belongs; it is the same rule applied where the banner does
+  not reach.
 - **It survives focus mode.** `z f` drops the header, the sidebar, the
   status bar and the parse-warning banner, because those are chrome.
   This is not: wanting a distraction-free outline is not consent to be
@@ -352,7 +468,8 @@ This means concurrent `outl serve` is OK — both go through the same reconcile 
 
 ### Automatic backups
 
-`runtime::run_with_theme_override` calls `outl_actions::backup::spawn_auto_pass(root, cfg.backup.enabled, cfg.backup.interval_minutes)` once at startup — the TUI is the **only** client running the pass today.
+`runtime::run_with_theme_override` sets a `BackupRoot` to the workspace root and calls `outl_actions::backup::spawn_auto_pass(root, cfg.backup.enabled, cfg.backup.interval_minutes)` once at startup.
+The GUI clients run the same pass.
 It is a detached background thread on purpose: a snapshot walks the whole workspace and forks `git`, which on a large graph is seconds, so it must never sit on the event loop, a commit boundary, or the quit path.
 Don't "improve" this by hanging it off the idle tick or `flush_pending_save` — the interval floor is read back out of the git history, so a session that ends before a snapshot simply gets one on the next launch.
 Policy + the "which client snapshots" table live in [`docs/clients.md` → Automatic backups](../../docs/clients.md#automatic-backups).
@@ -372,6 +489,18 @@ It does that because this crate mutates an in-memory AST and derives ops from th
 
 **New code here should call `commit_page` rather than extending `save_page_with`.**
 Adding a sixth step to the hand-written sequence deepens the divergence the issue exists to close, and the shared pipeline already has the ordering right.
+
+## Truecolor: absent means ANSI
+
+`runtime::preset::supports_truecolor(colorterm, term)` is pure over the two environment variables, and `fallback_for(truecolor)` picks what an **unconfigured** launch gets: the brand preset when 24-bit is available, `theme::default_dark()` when it is not ([#453](https://github.com/outlmd/outl/issues/453)).
+
+Three contracts:
+
+- **Level 4 only.** `--theme`, the per-workspace `[theme] preset` and the global config are explicit user choices and stay untouched. A user who asked for `dracula` on a 256-colour terminal gets `dracula`; second-guessing an explicit request is the bigger surprise, and `docs/theming.md` owns that precedence.
+- **Absence reads as "no".** A truecolor terminal that sets neither signal gets the ANSI preset, which renders correctly. The reverse default renders wrong, so the asymmetry is deliberate.
+- **This is not the `auto` mode question.** That one is pinned to dark because a terminal has no reliable way to read the OS appearance setting and probing (OSC 11, `COLORFGBG`) is unreliable under tmux. Truecolor has two widely-set signals, which is why it gets detected instead of declared.
+
+`COLORTERM` / `TERM` are read in `fallback_theme()` and nowhere else in the module, so the decision stays testable without touching the process environment.
 
 ## Theme mode: `auto` means dark here
 

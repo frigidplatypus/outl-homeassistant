@@ -347,6 +347,40 @@ export interface PageView {
   md_ahead_of_log_checked?: boolean;
   /** Non-refusal projection failure after this mutation already committed. */
   projection_error?: string;
+  /**
+   * Present when the block this mutation targeted had left the tree, so
+   * the keystroke did not land where the user typed it. Absent on every
+   * ordinary reply. Mirrors `outl_tauri_shared::state::DroppedEdit`.
+   */
+  dropped_edit?: DroppedEdit;
+}
+
+/**
+ * A keystroke that did not land on the block the user was typing in.
+ *
+ * A sync reload can re-mint or trash that block — or a peer can delete
+ * the whole page — between the client reading its id and the commit
+ * arriving. The backend keeps the text where it still can (a new block at
+ * the end of the page, `kept_as`) and says so here; it deliberately does
+ * not fail the command, because a failed commit pins a Retry that can
+ * never succeed against a dead id.
+ *
+ * Keeping the text silently would be a new silence rather than a fixed
+ * one: the end of a journal day is below the fold, so "my text vanished
+ * from where I typed it" is the same observation from the user's seat.
+ *
+ * `message` is the backend's wording and the only wording — a client that
+ * phrases this itself is a second copy of the fact.
+ *
+ * Mirrors `outl_tauri_shared::state::DroppedEdit`.
+ */
+export interface DroppedEdit {
+  /** The block the commit was aimed at; clear a stale `editingId` against it. */
+  block: string;
+  /** The new block holding the text, or absent when the page went too. */
+  kept_as?: string;
+  /** What to tell the user. */
+  message: string;
 }
 
 /**
@@ -500,6 +534,8 @@ export interface CutBlockReply {
   markdown: string;
   view: PageView;
 }
+// `PasteReply` lives in `./paste`, with the two wrappers that return it.
+export type { PasteReply } from "./paste";
 
 /**
  * Successful execution payload of `runCodeBlock`. Mirrors the Rust
@@ -567,6 +603,14 @@ export interface WorkspaceSummary {
    * compare against `false`, never fall back to `false`.
    */
   ops_complete: boolean;
+  /**
+   * Which day the calendar grid starts on, from the global
+   * `[calendar] week_start` (`~/.config/outl/config.toml`): `"monday"`
+   * or `"sunday"`. `null` (or missing on an older backend) means unset,
+   * and the client keeps its own historical first day — Monday on
+   * desktop, Sunday on mobile. See issue #94.
+   */
+  week_start?: "monday" | "sunday" | null;
 }
 
 // ── Plugins ─────────────────────────────────────────────────────────

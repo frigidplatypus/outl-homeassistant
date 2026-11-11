@@ -60,16 +60,17 @@ use outl_tauri_shared::commands::property::PropertyKey;
 use outl_tauri_shared::commands::reminders::{ReminderDto, ReminderSettingsDto, SnoozePresetDto};
 use outl_tauri_shared::commands::theme::ThemeConfigDto;
 use outl_tauri_shared::commands::timeline::{PageTimelineDto, TimelineEventDto};
+use outl_tauri_shared::commands::trash::{RestoreTrashReply, TrashEntryDto};
 use outl_tauri_shared::commands::trust::{ActorActivityDto, DeviceActivityDto, ExportReportDto};
 use outl_tauri_shared::merges::MergedEditDto;
 use outl_tauri_shared::state::{
-    BacklinksReply, CreateBlockReply, CutBlockReply, ProjectionWriteFailed, TemplateDto,
-    WorkspaceSummary,
+    BacklinksReply, CreateBlockReply, CutBlockReply, PasteReply, ProjectionWriteFailed,
+    TemplateDto, WorkspaceSummary,
 };
 
 use wire_fixtures::{
-    backlink, backlink_crumb, md_ahead_of_log, namespace_child, outline_node, page_meta, page_view,
-    parse_warning, table_view,
+    backlink, backlink_crumb, dropped_edit, md_ahead_of_log, namespace_child, outline_node,
+    page_meta, page_view, parse_warning, table_view,
 };
 use wire_pin::assert_wire_shape;
 
@@ -125,6 +126,15 @@ fn md_ahead_of_log_matches_its_interface() {
     assert_wire_shape(&md_ahead_of_log(), "MdAheadOfLog", &[]);
 }
 
+/// The `kept_as` arm, which carries every key. `DroppedEdit::lost` omits
+/// it (`skip_serializing_if`), so pinning that one instead would compare
+/// the interface against a reply that never mentions the field the client
+/// reads to select the new block.
+#[test]
+fn dropped_edit_matches_its_interface() {
+    assert_wire_shape(&dropped_edit(), "DroppedEdit", &[]);
+}
+
 #[test]
 fn projection_write_failed_matches_its_interface() {
     let dto = ProjectionWriteFailed {
@@ -145,6 +155,20 @@ fn create_block_reply_matches_its_interface() {
 }
 
 #[test]
+fn paste_reply_matches_its_interface() {
+    // Both optionals are `Some` on purpose: they `skip_serializing_if`,
+    // so a `None` value would drop the keys and the pin would compare an
+    // interface against a reply that never mentions the fields the
+    // clients read.
+    let dto = PasteReply {
+        view: page_view(),
+        host_text: Some("host text after the paste".into()),
+        host_caret: Some(25),
+    };
+    assert_wire_shape(&dto, "PasteReply", &[]);
+}
+
+#[test]
 fn cut_block_reply_matches_its_interface() {
     let dto = CutBlockReply {
         markdown: "- cut me\n".into(),
@@ -161,6 +185,7 @@ fn workspace_summary_matches_its_interface() {
         actor: "01JQ0000000000000000000005".into(),
         storage_root: "/w".into(),
         ready: true,
+        week_start: Some(outl_config::WeekStart::Monday),
         ops_complete: false,
     };
     assert_wire_shape(&dto, "WorkspaceSummary", &[]);
@@ -340,6 +365,35 @@ fn page_timeline_matches_its_interface() {
         events: Vec::new(),
     };
     assert_wire_shape(&dto, "PageTimeline", &[]);
+}
+
+/// A trash row's key set.
+///
+/// `refusal` is on the wire as `null` when a restore would work, never
+/// absent: a client switches on it to decide whether the row is
+/// actionable, and `skip_serializing_if` would make "restorable" and
+/// "field I forgot to read" the same shape.
+#[test]
+fn trash_entry_matches_its_interface() {
+    let dto = TrashEntryDto {
+        id: "01JQ0000000000000000000001".into(),
+        text: "o bloco apagado".into(),
+        page: Some("arquivo".into()),
+        blocks: 3,
+        deleted_at_ms: Some(1_757_000_000_000),
+        refusal: Some("cannot restore a page".into()),
+    };
+    assert_wire_shape(&dto, "TrashEntry", &[]);
+}
+
+#[test]
+fn restore_trash_reply_matches_its_interface() {
+    let dto = RestoreTrashReply {
+        id: "01JQ0000000000000000000001".into(),
+        blocks: 1,
+        view: None,
+    };
+    assert_wire_shape(&dto, "RestoreTrashResult", &[]);
 }
 
 #[test]

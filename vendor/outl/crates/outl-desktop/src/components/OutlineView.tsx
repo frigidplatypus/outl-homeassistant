@@ -9,13 +9,11 @@ import {
   deleteBlock,
   editBlock,
   importAssetFile,
-  indentBlock,
   instantiateTemplateAt,
   openAsset,
   openExternalUrl,
   openPageBySlug,
   openRef,
-  outdentBlock,
   pageBacklinks,
   pasteMarkdown,
   pastePlain,
@@ -62,6 +60,8 @@ import {
   trackBacklinks,
 } from "../lib/store";
 import { BlockRow, type BlockCallbacks } from "./BlockRow";
+import { createPasteOps } from "./outline-paste";
+import { createStructureOps } from "./outline-structure";
 import { PageSections } from "./PageSections";
 import { PageTitle } from "./PageTitle";
 import { PropertyEditor } from "./PropertyEditor";
@@ -358,26 +358,23 @@ export function OutlineView() {
     }
   }
 
-  /**
-   * Persist the in-flight textarea draft into the workspace before a
-   * paste splices at `caret`. The caret is measured against the draft
-   * (`textarea.value`), but the backend splices against
-   * `host_text_for_caret` — if the user typed since the last commit,
-   * the two diverge and the paste lands at the wrong offset. Mobile
-   * does the same in `Journal.handlePasteMarkdown`. No-op when the
-   * block isn't the one being edited (a paste from a click without an
-   * open editor). Edit mode is left untouched (`editBlock` doesn't flip
-   * `editingBlockId`), so the user keeps typing after a plain paste.
-   */
-  async function flushDraftBeforePaste(
-    pageId: string,
-    id: string,
-    hostText: string,
-  ) {
-    if (editingId() !== id) return;
-    const committed = await handleError(editBlock(pageId, id, hostText));
-    if (committed) applyView(committed);
-  }
+  /** Paste: flush the draft, run the command, fold the reply back into
+   *  the editor. See `./outline-paste`. */
+  const pasteOps = createPasteOps({
+    pageId: () => appState.page?.id,
+    editingId,
+    applyView,
+    handleError,
+  });
+
+  /** Tab / Shift-Tab indent and outdent. See `./outline-structure`. */
+  const structureOps = createStructureOps({
+    pageId: () => appState.page?.id,
+    applyView,
+    handleError,
+    setSelectedBlockId: (id) => setAppState("selectedBlockId", id),
+    setEditingId,
+  });
 
   async function handleRefClick(target: string) {
     const view = await handleError(openRef(target));
@@ -501,18 +498,8 @@ export function OutlineView() {
       setAppState("selectedBlockId", reply.new_id);
       setEditingId(reply.new_id);
     },
-    onIndent: async (id) => {
-      const pageId = appState.page?.id;
-      if (!pageId) return;
-      const view = await handleError(indentBlock(pageId, id));
-      if (view) applyView(view);
-    },
-    onOutdent: async (id) => {
-      const pageId = appState.page?.id;
-      if (!pageId) return;
-      const view = await handleError(outdentBlock(pageId, id));
-      if (view) applyView(view);
-    },
+    onIndent: structureOps.onIndent,
+    onOutdent: structureOps.onOutdent,
     onDeleteEmpty: async (id) => {
       const pageId = appState.page?.id;
       if (!pageId) return;
@@ -532,20 +519,10 @@ export function OutlineView() {
       const view = await handleError(setBlockCollapsed(pageId, id, collapsed));
       if (view) applyView(view);
     },
-    onPasteMarkdown: async (id, caret, text, hostText) => {
-      const pageId = appState.page?.id;
-      if (!pageId) return;
-      await flushDraftBeforePaste(pageId, id, hostText);
-      const view = await handleError(pasteMarkdown(pageId, id, caret, text));
-      if (view) applyView(view);
-    },
-    onPastePlain: async (id, caret, text, hostText) => {
-      const pageId = appState.page?.id;
-      if (!pageId) return;
-      await flushDraftBeforePaste(pageId, id, hostText);
-      const view = await handleError(pastePlain(pageId, id, caret, text));
-      if (view) applyView(view);
-    },
+    onPasteMarkdown: (id, caret, text, hostText) =>
+      pasteOps.run(id, hostText, (page) => pasteMarkdown(page, id, caret, text)),
+    onPastePlain: (id, caret, text, hostText) =>
+      pasteOps.run(id, hostText, (page) => pastePlain(page, id, caret, text)),
     onRunCodeBlock: async (id) => {
       const pageId = appState.page?.id;
       if (!pageId) return;

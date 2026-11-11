@@ -1,11 +1,13 @@
 # Development guide
 
 The engineer-facing onramp.
-This page is about **how you hack on outl** — clone, build, test, debug, ship.
+This page is about **how you hack on outl** — clone, build, test, debug.
 
 If you're looking for **what reviewers measure your PR against**, that's [Contributing & code review](contributing.md).
 The two pages are deliberately split: this one is workflow, that one is policy.
 Read this first; read that before opening a PR.
+
+What happens *after* you push — every workflow, the nightly beta gate, the release pipeline and what each package manager points at — is [CI and release](ci-and-release.md).
 
 If anything here is wrong or out of date, that's a bug — open an issue or fix it in the same PR that drifted the behavior.
 
@@ -44,7 +46,7 @@ Press `?` inside the TUI for the keymap.
 | Frontend tests (`crates/outl-mobile/src/**`, `crates/outl-desktop/src/**`, `crates/outl-frontend-shared/**`) | Bun + `bun run test` |
 | Bench job locally | `cargo install hyperfine --version 1.21.0 --locked` for the CLI side; criterion ships with `cargo bench` |
 
-The CI containers don't install GTK, so `outl-mobile` and `outl-desktop` are **excluded from the workspace `cargo clippy/test/doc` runs** (see [CI walkthrough](#9-ci-walkthrough)).
+The CI containers don't install GTK, so `outl-mobile` and `outl-desktop` are **excluded from the workspace `cargo clippy/test/doc` runs** (see [CI walkthrough](ci-and-release.md#1-ci-walkthrough)).
 That means a clean `cargo test --workspace` does not exercise those two crates.
 If you change them, run their crate-specific commands and let CI's `mobile.yml` / `desktop.yml` matrices cover the rest.
 
@@ -79,12 +81,22 @@ crates/outl-desktop/
 │   ├── components/            # AppShell, Sidebar, OutlineView (impl BlockCallbacks),
 │   │                         #   BlockRow (chrome) → BlockBody (read) / BlockEditor
 │   │                         #     (textarea) / block-suggest / block-callbacks /
+│   │                         #     outline-paste (createPasteOps) /
+│   │                         #     outline-structure (createStructureOps) /
 │   │                         #     CodeFenceView / SuggestPopups, BacklinksPanel, Picker,
 │   │                         #   SettingsModal, ChromeToggleBar, SyncIndicator,
 │   │                         #   PropertyEditor (key:: value chips + create/delete),
 │   │                         #   Onboarding, WorkspacePicker
 │   └── lib/                   # api.ts (desktop-only cmds), code-block.ts, events.ts,
-│                             #   shortcuts.ts, action-handlers.ts, store.ts
+│                             #   shortcuts.ts, mode.ts (detectMode), store.ts,
+│                             #   keyboard-reach.ts (roving focus, F6 regions,
+│                             #     focusFirstRowOnOpen, followSelection),
+│                             #   action-handlers.ts (assembly) → handler-context
+│                             #     (target + round-trip, one or a batch) / chrome- (surfaces + Esc
+│                             #     cascade) / cursor- (selection, day, zoom) /
+│                             #     block- (ops on the selected block) / page-
+│                             #     (delete, undo/redo, fold-all) / visual- (range) /
+│                             #     clipboard- (registers) / speed- handlers
 └── src-tauri/
     ├── Cargo.toml  build.rs  tauri.conf.json (app.outl.desktop)  capabilities/  icons/
     └── src/                   # main.rs, lib.rs (run() registers all commands),
@@ -238,30 +250,8 @@ Its `check` job compiles the whole desktop tree on Linux, so a compile error rea
 The thing that does exercise it is `release.yml` dispatched with `dry_run: true`, which builds and verifies every artifact on the branch and publishes nothing.
 Run that on any PR touching the release pipeline; adding a second bundling leg to every desktop PR buys the same signal at a recurring cost.
 
-**Adding a platform starts in [`scripts/release_assets.py`](../scripts/release_assets.py).**
-That file is the list of what a release publishes: one entry per build-matrix leg, naming its assets, whether it is `required`, and which package manager points at it.
-Then the matrix leg in `release.yml`, its entries in `update_tap`'s loops, and the `url` / `sha256` / bottle anchors in the manifest that serves it.
-Every way those can disagree is silent at release time — a `sed` that matches no line exits 0, `update_tap` finishes on `git diff --quiet`, which only asks whether *something* changed — so somebody's `brew install` or `scoop install` is the first thing to notice, one release later.
-`scripts/check-release-assets.py --manifest` runs in `hygiene.yml` and fails on the mismatch instead; it parses rather than builds, so it takes a second and needs nothing installed.
-
-**A release publishes on what is on the draft, not on whether every job went green.**
-The gate used to be `needs.<job>.result == 'success'` per build job, which made each job a single point of failure for every other job's assets: one architecture's bundler, or one flaky runner, and a release with 25 finished artifacts published none of them.
-The repo's own workaround for `build_android` was the opposite extreme — absent from the conditions, so a missing APK published in silence, and the same shape produced a v0.12.0 draft with zero assets that nothing complained about.
-
-So `required` lives in that table and the pipeline reads it in three places:
-
-- a leg marked optional carries `continue-on-error: ${{ matrix.optional || false }}`, which keeps the workflow run from going red over a platform still in bring-up;
-- `publish_release` does not read job results at all, which is the part that actually keeps the release moving — a half-failed matrix reports whatever it reports to `needs`, and the gate never asks;
-- what it reads instead is the draft's asset list, against the table: a missing **required** asset fails the publish, and a missing optional one publishes with the gap named in that release's own notes and in the run summary;
-- `update_tap` moves a manifest only when every asset *that manifest* points at is present, because a manifest carrying a new version and the previous release's digest is a hash mismatch on install — worse than one still pointing at a release that exists.
-
-Promoting a platform out of bring-up is flipping `required` in the table, and that flip is the record that it has been green.
-Nothing about this is a reason to leave a platform optional: the gap is loud in three places, and a leg that keeps failing is a bug with a name.
-
-**Asset names use two architecture spellings, and both are deliberate.**
-The CLI / TUI tarballs are `outl-linux-x64` / `outl-linux-arm64` (and `outl-macos-x64` / `outl-macos-arm64`), the desktop bundles are `outl-desktop-linux-x86_64` / `outl-desktop-linux-aarch64`.
-The desktop set matches `uname -m` and Linux packaging convention, which is what a `.deb` / `.rpm` / AppImage user expects; the CLI set is older and is what the Homebrew anchors and every published release URL already say.
-A release asset URL does not redirect, so renaming either family breaks links that are already in the wild — the spellings stay split, and the docs name both.
+**Adding or renaming a release artifact starts in [`scripts/release_assets.py`](../scripts/release_assets.py)**, not in `release.yml`.
+What that file owns, how `publish_release` gates on the draft's assets rather than on job results, and why asset names carry two architecture spellings: [CI and release → What a release publishes](ci-and-release.md#what-a-release-publishes).
 
 ```bash
 # from the repo root
@@ -276,6 +266,38 @@ cargo tauri build
 ```
 
 The Vite dev server runs on **port 1421** so it can coexist with `outl-mobile` (port 1420) when both are running side by side.
+
+**Launch it from a terminal when you are debugging sync.**
+The desktop's `EnvFilter` defaults to `info,outl_sync_iroh=debug,iroh=info` and honors `RUST_LOG`.
+A terminal-launched `cargo tauri dev` therefore prints the endpoint it bound plus its node id, every connect attempt's target and outcome, and each `delta sync received N ops`.
+That is the whole device↔device picture; see [`outl-sync-iroh/CLAUDE.md`](../crates/outl-sync-iroh/CLAUDE.md) for what the transport logs.
+
+#### Why the desktop crate has Windows-only boot code
+
+On macOS and Linux `run()` builds the Tauri app and the webview appears.
+On Windows the webview is a separate, user-installable runtime, so two failures happen *before* any outl code would run, and both used to arrive as a crash report instead of a sentence.
+`src-tauri/src/webview_boot.rs` owns both decisions and is unit-tested without a Windows machine; `crates/outl-desktop/CLAUDE.md` → "Logging" carries the rules a contributor must not undo.
+
+| Failure | What the user got | What happens now |
+|---|---|---|
+| **No WebView2 runtime installed.** `tauri::webview_version()` returns `Err`, which is the same reading `tauri-runtime-wry` turns into `Error::WebviewRuntimeNotInstalled` while creating the main window, so `App::run` panics with `Failed to setup app: {e}` | Tauri's own dialog, then a panic — which the crash reporter files | `webview_boot::webview_boot` runs **before** `outl_telemetry::init`, prints a Windows message box naming the Evergreen WebView2 runtime and Microsoft's download page, and `process::exit(1)`. The probe is before `init` so the reporter is not running on the path that exists to avoid a report |
+| **Runtime present, controller creation times out** (OUTL-4): a COM `ERROR_TIMEOUT` while `App::run` auto-created the configured window | The same `Failed to setup app: {e}` panic, with no retry | `tauri.windows.conf.json` adds `"create": false` to the same `"main"` entry, so `App::run` parses the window without building it. `setup` then builds it via `webview_boot::open_main_window`, retrying up to `WEBVIEW_CREATE_MAX_ATTEMPTS` before the same message-box-and-exit |
+
+Five things about that are easy to undo by accident:
+
+- **`Ok("")` is success.**
+  Tauri's gate is `is_ok()`, so an empty version string must boot; a second reading of that `Result` is how the two answers drift apart.
+- **macOS and Linux never call it.**
+  A failed WebKit probe on macOS is not a missing runtime, and Tauri still creates the webview there.
+- **The window is described once.**
+  `open_main_window` builds from `app.config().app.windows`, so there is no hand-maintained copy of title / size / resizable.
+  `the_windows_config_matches_the_base_config_entry_except_create` (runs on every platform) pins the two config files to describe the same window aside from `create`.
+- **`destroy()` only queues the teardown**, and the retry loop runs inside `setup`, before the event loop could process it.
+  So `clear_leftover_main_window` re-checks the label *after* `destroy()` and counts a still-registered leftover as a failed attempt, rather than calling `build()` into a `WindowLabelAlreadyExists` collision.
+  Reading `tauri` / `tauri-runtime-wry` 2.12.1, a controller failure does not actually leave one behind today, since the window-manager map insert only runs on the runtime's success path.
+  The guard exists to remove the dependency on that staying true across a bump.
+- **Both decisions are taken against traits, not `tauri::AppHandle`.**
+  `webview_create_decision` is the pure retry/give-up call and `LeftoverMainWindow` abstracts the `destroy()`, which is how either is testable at all on a machine that is not Windows.
 
 ### Testing P2P sync from a source build
 
@@ -729,191 +751,7 @@ cargo test -p outl-actions --release --test composite_write_bench -- --ignored -
 
 ---
 
-## 9. CI walkthrough
-
-| Workflow | Triggers | What it runs | Blocks merge? |
-|---|---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | Push / PR to `main` (skipped on docs-only) | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo doc -D warnings`, an **`advisories`** job (`cargo deny --locked check advisories` against `deny.toml`: any RustSec vulnerability fails, the whole graph is checked for unmaintained and unsound crates too, and every ignore carries a reason), plus a dedicated **`sync`** job (`outl-core` + `outl-sync-iroh` with `PROPTEST_CASES=1024`), and a **`frontend`** job (`bun run test` + `bun run typecheck` over every bun workspace package). Excludes `outl-mobile` + `outl-desktop` from the Rust jobs. Test matrix: `test (linux)` + `test (macos)`. | **Yes** |
-| [`hygiene.yml`](../.github/workflows/hygiene.yml) | Push / PR to `main`, **including** docs-only changes | `scripts/check-file-size.sh` (the file size ratchet), `scripts/check-docs-index.sh` (every RFC reachable from `docs/SUMMARY.md`), `scripts/tests/test_check_artifact_stripped.py` (the strip gate's own suite), and `scripts/check-release-assets.py --manifest` plus its suite (the three build matrices, `update_tap`'s loops, the Homebrew formula, the cask and the Scoop manifest all name the platforms `scripts/release_assets.py` names). Kept out of `ci.yml` on purpose: that workflow skips `docs/**`, which is exactly the change set the index check has to see. | **Yes** |
-| [`mobile.yml`](../.github/workflows/mobile.yml) | Push / PR touching mobile paths | Frontend tests, Swift tests, Rust mobile crate, iOS archive + sign on `push` | Mobile changes only |
-| [`desktop.yml`](../.github/workflows/desktop.yml) | Push / PR touching desktop paths | Tauri build matrix (macOS/Linux/Windows) | Desktop changes only |
-| [`bench.yml`](../.github/workflows/bench.yml) | Push / PR touching `outl-md`, plus weekly cron | Criterion (small/medium/large) on every PR; xlarge + CLI hyperfine on cron / manual dispatch. Artifacts retained 14–30 days. | No (informational) |
-| [`release.yml`](../.github/workflows/release.yml) | Push to `main` (beta), `v*` tag (GA), manual | Computes version from `Cargo.toml`, builds the CLI + TUI matrix (macOS `arm64`/`x86_64`, Linux `x86_64`/`aarch64`, Windows `x86_64`/`aarch64`), builds the desktop bundles (universal macOS dmg, Linux AppImage/deb/rpm and a Windows NSIS installer per architecture), the Android APK, drafts release, uploads assets, gates the publish on [`scripts/release_assets.py`](../scripts/release_assets.py), bumps the Homebrew formula + cask and the Scoop manifest (`bucket/outl-beta.json`), publishes `@outl/plugin-sdk` to npm and the embedder lib crates to crates.io. | n/a |
-| [`testflight.yml`](../.github/workflows/testflight.yml) | `Mobile` workflow completing successfully | Downloads the signed `.ipa`, uploads to App Store Connect via `xcrun altool`, sets "What to Test" notes via App Store Connect API. | n/a |
-| [`docker.yml`](../.github/workflows/docker.yml) | Push to `main` / `v*` tag, PR touching `Dockerfile` / `docker/**`, manual | Builds `ghcr.io/<owner>/outl-server` once per architecture on a runner of that architecture (`linux/amd64`, `linux/arm64`), pushes each by digest, merges them into one manifest list per tag, and attests that list through Sigstore (`gh attestation verify oci://…`). A PR builds and pushes nothing. | No |
-| [`cleanup-tags.yml`](../.github/workflows/cleanup-tags.yml) | Cron | Garbage-collects stale beta tags. | n/a |
-
-### Action pinning
-
-Every `uses:` points at a full commit SHA with the release tag in a comment (`actions/checkout@<sha> # v7.0.1`), so a moved or hijacked tag can't change what runs next to the release secrets.
-Don't hand-edit a SHA back to a tag: `.github/dependabot.yml` bumps the GitHub Actions pins weekly in one grouped PR, along with Cargo and Bun.
-To pin a new action, resolve the tag with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and, when that returns a `tag` object, follow it to the commit.
-
-### Runner sizing
-
-Every workflow runs on Blacksmith runners (`runs-on: blacksmith-<n>vcpu-<image>`, with `-arm` appended for ARM64 Linux), never on GitHub-hosted ones.
-The one exception is `release.yml::publish_npm`, which runs on `ubuntu-24.04`: npm trusted publishing (OIDC) does not accept self-hosted runners yet, and Blacksmith registers as self-hosted.
-Moving it back to Blacksmith breaks the npm publish.
-Its trusted publisher on npmjs.com (`@outl/plugin-sdk` → Settings → Trusted publishing) must stay configured as owner `outlmd`, repository `outl`, workflow `release.yml`, environment `release`, with publishing allowed.
-Billing is per vCPU-minute, with a platform multiplier on top: ARM 0.625x, x64 Linux 1x, Windows 2x, macOS 6.67x.
-That multiplier is why job placement matters more than job speed: a 29s macOS job costs more than a 5min Linux one.
-
-Two rules follow from it, and both are already applied in the workflows:
-
-1. **Only platform-specific work runs on macOS or Windows.**
-   Anything that produces the same result on Linux runs on Linux, once.
-   `mobile.yml::rust-check` builds `outl-mobile` only for this reason — `outl-actions` / `outl-core` / `outl-md` are covered by `ci.yml::test`, and running their suites again on macOS was 55% of a full run's bill.
-2. **Size the SKU from measured CPU and memory, not from intuition.**
-   `blacksmith jobs stats <job_id>` prints the per-job CPU timeseries, memory peak and OOM count; `blacksmith usage --breakdown-by workflow_job` prints what each job costs.
-
-Sizes as of the Blacksmith migration, from a full run of every workflow:
-
-| Job | SKU | Why |
-|---|---|---|
-| `ci.yml::fmt`, `ci.yml::advisories` | 2 vCPU | rustfmt and cargo-deny compile nothing (16s for fmt) |
-| `mobile.yml::frontend`, `ci.yml::frontend`, `hygiene.yml::hygiene` | 2 vCPU | vitest + Vite build, 12s, never saturated 4 vCPU; the other two are ~4s of vitest and a line-count scan, with no compilation at all |
-| `release.yml` orchestration (`prepare`, `tag`, `create_release`, `publish_*` except `publish_npm`, `update_tap`), `cleanup-tags.yml` | 2 vCPU | shell + `gh` calls, no compilation |
-| `ci.yml::docs`, `ci.yml::sync`, `bench.yml` | 4 vCPU | doc/proptest jobs already finish in ~100s; bench stays fixed so numbers remain comparable run over run |
-| `ci.yml::clippy`, `ci.yml::test (linux)`, `desktop.yml::check`, release builds | 8 vCPU | measured 71–76% average CPU on 4 vCPU with 2.6–4.7 GB of 16 GB used and zero OOM: CPU-bound, so more cores cut wall clock at roughly flat billing |
-| macOS jobs | 6 vCPU | smallest macOS tier Blacksmith offers |
-| `release.yml` Linux legs (CLI `x86_64`/`aarch64`, desktop `x86_64`/`aarch64`), `docker.yml` | 8 vCPU | same CPU-bound release build on either architecture; the ARM legs use the `-arm` suffix of the same SKU, billed at 0.625x |
-
-**The Linux release legs are pinned to `ubuntu-2204`, not `2404`, and that is not a cost decision.**
-A glibc-linked binary runs on the glibc it was built against or newer, never older, so the image the artifact is built on *is* its compatibility floor: 22.04 is glibc 2.35 (Debian 12, every supported Ubuntu LTS), 24.04 is 2.39 (and nothing older than itself).
-`build_desktop_linux` was pinned for this from the start and said so; the CLI leg was built on 24.04 until [#411](https://github.com/outlmd/outl/issues/411), which made `outl-linux-x64.tar.gz` die with `version GLIBC_2.38 not found` on exactly the distros where someone downloads a tarball instead of using a package manager.
-Bumping either to 24.04 raises that floor for everyone; do it on purpose, or not at all.
-
-**The Windows ARM64 desktop leg is a cross-compile, and the target is installed with `rustup target add`.**
-`build_desktop_windows` runs on the x64 `windows-2025` image, which already has stable for `x86_64-pc-windows-msvc` plus the MSVC ARM64 linker.
-`dtolnay/rust-toolchain`'s `targets:` input runs `rustup toolchain install stable --target <triple>`, and on a toolchain the image already has, that does not install the extra target.
-The job then died in `tauri build` with the target not installed, so `outl-desktop-windows-aarch64-setup.exe` never landed on a release.
-`rustup target add` installs it on the toolchain `rust-toolchain.toml` selects.
-The CLI matrix on the same image already did, which is why `outl-windows-arm64.zip` shipped and the installer did not.
-
-**Check names must not contain the runner SKU.**
-Branch protection matches required checks by name, so `test (ubuntu-latest)` becoming `test (blacksmith-8vcpu-ubuntu-2404)` leaves `main` blocked on a check that will never report again.
-Matrix jobs therefore carry a stable `label` (`linux`, `macos`, `macOS arm64`, …) and the SKU lives only in `matrix.os`.
-
-### What blocks merge
-
-The `ci.yml` jobs are the merge gate.
-The PR template and the policy in [`docs/contributing.md`](contributing.md) describe everything else reviewers look at on top of CI.
-
-### Debugging a red CI
-
-1. **Read the failing job's "Annotations"** at the top of the PR check page — it usually points at the file + line.
-2. **Reproduce locally** with the exact command the workflow ran (the YAML is the source of truth).
-3. **If `cargo doc` fails** with `rustdoc::private_intra_doc_links`, see the [doc gotcha](#cargo-doc-gotcha) above.
-4. **If clippy fails on a target you don't have** (e.g. you're on Linux and it's the macOS leg), check that the failure isn't environmental before suspecting your patch.
-   `outl-mobile` and `outl-desktop` are explicitly excluded from `ci.yml`'s clippy job; if you somehow re-included them, that's the bug.
-
-### Flakes
-
-Treat a flaky test as a real bug.
-The CRDT and parser have no inherent flakiness — if a test fails twice and passes the third time, it's hiding a race or a non-deterministic order in something we control.
-Don't add retries; find the cause.
-
----
-
-## 10. Release process
-
-### Version source of truth
-
-`[workspace.package].version` in the root `Cargo.toml`.
-Crate manifests inherit via `version.workspace = true`.
-**Bumping the workspace bumps everything.**
-
-`crates/outl-mobile/src-tauri/tauri.conf.json` deliberately omits `version`; CI reads `Cargo.toml` and injects the value into `cargo tauri ios build` via `--config`.
-This is non-negotiable — see `crates/outl-mobile/CLAUDE.md` § "Versioning + TestFlight release".
-
-### Beta cadence
-
-Every push to `main` produces a beta release automatically:
-
-- Tag: `v<workspace.version>-beta.<run_number>` (e.g. `v0.6.0-beta.48`).
-- Binary: reports the full beta version (the workflow `sed`s `Cargo.toml` in-place before `cargo build`; the change is local to the runner).
-- GitHub: published as a prerelease with auto-generated release notes.
-- Homebrew tap (`Formula/outl-beta.rb`, `Casks/outl-desktop-beta.rb`) bumped automatically with `[skip ci]` commit.
-
-### GA
-
-Bump `workspace.package.version` (e.g. `0.6.0` → `0.7.0`), merge to `main`, then push a `v0.7.0` tag by hand.
-The `tags: ["v*"]` trigger in `release.yml` picks it up.
-
-### TestFlight (iOS)
-
-`mobile.yml` builds + signs the IPA on every push.
-`testflight.yml` runs after `mobile.yml` completes, downloads the IPA artifact, uploads to App Store Connect.
-
-**Release notes** ("What to Test") come from `conventional-changelog-cli` (preset `conventionalcommits`) reading the commit log since the last tag.
-**Use Conventional Commits.**
-A commit without a `feat:` / `fix:` / `chore:` prefix lands under a generic "Other changes" bucket — the user loses context.
-
-### iOS version propagation and TestFlight
-
-**Single source of truth: `Cargo.toml` workspace `version`.**
-To bump the app version, edit `[workspace.package].version` at the repo root — everywhere else inherits:
-
-| Field | Where it lives | How it's resolved |
-|-------|----------------|-------------------|
-| Rust crate version | `crates/outl-mobile/src-tauri/Cargo.toml` | `version.workspace = true` |
-| Tauri config version | `crates/outl-mobile/src-tauri/tauri.conf.json` | Field intentionally **omitted** in the source; CI injects it via `cargo tauri ios build --config '{"version": "<short>"}'` |
-| `CFBundleShortVersionString` | iOS `Info.plist` | Tauri propagates from `--config` during `cargo tauri ios build` |
-| `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` | `gen/apple/.../project.pbxproj` | Same — Tauri regenerates from the merged config every build |
-
-**Why `--config` and not Tauri's `Cargo.toml` fallback?**
-The iOS code path doesn't honor that fallback — it uses `1.0.0` instead.
-So CI reads the workspace version (`awk` against `Cargo.toml` in `Compute build metadata`) and passes it via `--config`; the `Patch archive CFBundleVersion` step aborts if the propagated short version mismatches.
-**Never** put `"version": "x.y.z"` back in `tauri.conf.json` — Tauri would then use the static value over the `--config` override and the two drift on the next bump.
-
-#### CI release flow
-
-A push to `main` triggers in parallel:
-
-1. **`Release`** (`release.yml`) — auto-bumps `Cargo.toml` locally to `<base>-beta.<run_number>`, cuts a `v<...>-beta.<N>` tag, builds desktop binaries, ships the Homebrew formula (never commits the bump back).
-2. **`Mobile`** (`mobile.yml`) — builds the signed IPA from the *unbumped* `Cargo.toml`, uploads it as `outl-ios-release`, triggers `TestFlight`.
-3. **`TestFlight`** (`testflight.yml`) — downloads the artifact, uploads to App Store Connect (`xcrun altool`).
-
-#### CFBundleVersion (build number) scheme
-
-Apple needs `CFBundleVersion` strictly monotonic across every IPA, but the marketing version (`0.5.1`) repeats across beta builds.
-Scheme: `CFBundleShortVersionString = <SHORT_VERSION>` (e.g. `0.5.1`); `CFBundleVersion = <SHORT_VERSION><BETA_PAD>` (e.g. `0.5.1027`, beta number zero-padded to 3 digits).
-`BETA` comes from the latest `v<SHORT_VERSION>-beta.<N>` git tag (set by `Release`), falling back to Mobile's `github.run_number`; re-runs append `.<run_attempt>` as a 4th component to dodge Apple's duplicate guard.
-The build number is patched into the `.xcarchive`'s embedded `Info.plist` after `cargo tauri ios build` but **before** `xcodebuild -exportArchive` — the only injection point that survives, since Tauri exposes a single `version` field.
-
-#### What goes wrong if you forget this
-
-- Patching `gen/apple/.../Info.plist` pre-build is a no-op (Tauri regenerates it); `xcrun altool` exits 0 even on 409, so `testflight.yml` greps for `ERROR:`, don't simplify it.
-
-### Homebrew
-
-The tap is at the root of this same repo (`Formula/`, `Casks/`).
-The `update_tap` job in `release.yml` patches version + sha256 anchors for both the CLI formula and the desktop cask after every beta release.
-
-The desktop dmg is **unsigned** today (Apple Developer account pending).
-The cask carries a `caveats` block with the `xattr -dr com.apple.quarantine` workaround.
-
-### crates.io (lib crates for embedders)
-
-The `publish_crates` job in `release.yml` publishes `outl-core`, `outl-md`, `outl-actions`, `outl-ws` and `outl-exec` to crates.io on every release, beta and GA, at the same version the binaries report.
-The first four are the [embedding contract](embedding.md); `outl-exec` ships only because `outl-actions` references it and cargo refuses to publish a crate whose dependencies aren't in the registry.
-Every other crate in the workspace carries `publish = false`; flipping one later is a one-line change (plus adding it to the job's publish loop).
-
-SemVer keeps consumers safe: a plain `outl-core = "0.11"` requirement never resolves a `-beta.N` prerelease, so crates.io consumers only see GA versions unless they opt in with a `"0.11.0-beta"`-style requirement.
-
-The crates depend on each other with an exact `=` requirement, written by [`scripts/pin_workspace_deps.py`](../scripts/pin_workspace_deps.py) after the version rewrite.
-A caret on `0.13.0-beta.N` also matches the stable `0.13.0`, and cargo picks the stable because a release sorts above its prereleases.
-`cargo publish` verifies against that resolution, so a beta would build against the stable already on crates.io and miss any API added since the tag.
-The publish loop stays in dependency order (`outl-core`, `outl-md`, `outl-exec`, `outl-actions`, `outl-ws`).
-The exact pin is what makes the next crate's verify select the version this job just published.
-cargo waits for that version to show up in the sparse index before starting the next crate.
-
-The job is idempotent (it checks crates.io before each publish, so re-runs resume instead of failing) and self-gating (`cargo publish` verifies each crate by building it).
-It authenticates with the `CARGO_REGISTRY_TOKEN` secret in the `release` environment.
-
----
-
-## 11. Where to ask
+## 9. Where to ask
 
 - **Bugs**: GitHub issues with the [bug report template](../.github/ISSUE_TEMPLATE/bug_report.md).
 - **Feature requests**: GitHub issues with the feature template.

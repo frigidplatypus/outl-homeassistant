@@ -98,15 +98,28 @@ if [ "${1:-}" = "--update" ]; then
 # of landing a change — it means a new file crossed the line, and
 # the split should happen instead.
 #
-# Two rows have been raised on purpose. They are named in the script
+# Three rows have been raised on purpose. They are named in the script
 # that writes this header, not in the file, because --update rewrites
 # the file from scratch and would drop a note added by hand:
 #
 #   frontend-shared/src/api/types.ts  717 -> 750  (issue 275)
+#                                     674 -> 676  (issue 488)
 #     The hand-written Rust<->TS wire mirror. It grows when the wire
 #     grows; splitting it to save 20 lines would refactor every
 #     client's type contract. The pins in outl-tauri-shared/tests/
 #     are what keep it honest, not its length.
+#     The second raise is two lines: PasteReply moved to api/paste.ts
+#     to sit with the two wrappers that return it, and what stayed
+#     behind is the re-export that keeps the import path unchanged.
+#     The same move took commands.ts down by 41 lines.
+#     The third raise is 34 lines for DroppedEdit plus the PageView
+#     field that carries it (issue 473): a keystroke whose target block
+#     had left the tree. It is the registered reason above, verbatim -
+#     the wire grew, so the mirror grew. The pin is wire_types.rs's
+#     dropped_edit_matches_its_interface.
+#     (No backticks in this block — the header is written through an
+#     unquoted heredoc, so one becomes a command substitution and the
+#     sentence silently loses the word.)
 #
 #   outl-tui/src/state.rs  976 -> 983  (issue 275)
 #     One memo field. The nested-pages rows cost two full-workspace
@@ -127,6 +140,15 @@ if [ "${1:-}" = "--update" ]; then
 #     (No backticks in this block: the heredoc below is deliberately
 #     unquoted so it can interpolate THRESHOLD, which means a backtick
 #     here runs as a command and silently empties the words around it.)
+#
+#   outl-actions/src/page.rs  682 -> 689  (issue 473)
+#     The dispatch branch that routes a reopened-by-slug page out of the
+#     trash: open_or_create already computes the deterministic root id
+#     at this point, so checking whether it is trashed and handing off
+#     to the revive helper is seven lines in the one place that already
+#     decides what a slug resolves to. The revival logic itself (and its
+#     tests) is a sibling module, same split as the existing page_merge
+#     and page_repair siblings, so page.rs only pays for the call site.
 #
 # None of these arguments generalises. A further raise makes its own case.
 HEADER

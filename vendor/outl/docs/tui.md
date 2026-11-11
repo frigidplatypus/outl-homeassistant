@@ -24,10 +24,16 @@ Task checkboxes (`☐`/`◐`/`☑`), calendar day dots, and scrollbar symbols st
 Every yank (`yy` / `Y` in Normal, `y` in Visual) writes clean canonical outl markdown to the OS clipboard.
 Two paths are tried in order:
 
-1. **`arboard`** — direct X11 / Wayland / macOS clipboard API.
+1. **`arboard`** — direct X11 / macOS clipboard API, through XWayland on a Wayland session.
 2. **OSC 52** — a terminal escape sequence (`\x1b]52;c;<base64>\x07`) that reaches the clipboard over SSH, inside tmux, and in Chrome OS Crostini where `arboard` has no display server.
 
 The status line reads `yanked N block(s) → clipboard` on success and `yanked N block(s) (clipboard unavailable)` when both paths fail.
+
+On X11 the TUI itself serves the clipboard, so on a bare session (no desktop environment, no clipboard manager) a yank can be pasted elsewhere only while the TUI is running; quitting drops it.
+With a clipboard manager, a normal quit hands the last yank over.
+A crash, a kill or a closed terminal window skips that handover, so the text then survives only if the manager had already copied it.
+A Wayland session reaches the clipboard through XWayland and behaves the same.
+macOS keeps the text after quit.
 
 Pasting the yanked markdown in another app reconstructs the same bullet structure.
 Pasting back into outl uses `p` (with formatting) or `P` (without formatting) — see [Paste from clipboard](#paste-from-clipboard) below.
@@ -178,6 +184,7 @@ Esc commits (writes back to the `.md`), Enter commits + creates a new block.
 | `Shift+Enter` | Soft newline — only on terminals that speak the kitty keyboard protocol |
 | `Ctrl+Enter` / `Ctrl+T` | Cycle the block's task prefix — TODO → DOING → DONE → none (stays in Insert, caret follows the text; `Ctrl+T` works on terminals that collapse `Ctrl+Enter`) |
 | `Tab` / `Shift-Tab` | Indent / outdent (stays in Insert) |
+| other `Ctrl`/`Alt` chords | Ignored, never typed as text. `Ctrl+A/E/W/U/K/B/F` used to insert their bare letter into the block ([#429](https://github.com/outlmd/outl/issues/429)); readline editing inside a block is not implemented, so they do nothing today |
 | `Backspace` on empty | Delete block, move to previous |
 | `Left` at column 0 | Spill into the previous block (cursor at end) |
 | `Right` at end of block | Spill into the next block (cursor at start) |
@@ -246,6 +253,30 @@ What each paired device is still waiting for, and the concurrent edits Yrs merge
 | `Esc` / `q` | Close |
 
 Both lists live in `.outl/state/` and survive a restart.
+
+### Trash (`/trash`, `:trash`)
+
+Every block you have deleted in this workspace, and the way back (issue #287).
+A delete here is a move, never a removal, so this reaches a deletion from any device and any day — unlike `u`, which walks this session only.
+
+| Key | What it does |
+|-----|--------------|
+| `j` / `k` (or `↑` / `↓`) | Move between deletions |
+| `r` | Restore: put the block back under the block it was deleted from |
+| `Enter` | On a deleted **block**: open the page it came from, without restoring it |
+| `Esc` / `q` | Close |
+
+A deleted subtree is one row, and the row says how many blocks come back with it.
+A row that cannot be restored says why in place of offering it: a deleted page (its slug is usually taken by now), or a block whose parent went to the trash after it did.
+`Enter` still works on a refused **block** row — "where did my content go" is answerable even when "bring it back" is not.
+
+On a deleted **page** row `Enter` refuses and says so, because opening a page whose `.md` went with the delete is how you *revive* it: the opener reads the missing file as a new page and reconciles a seed, which lifts the page out of the trash and turns one row into one per child.
+Reviving a page deliberately is a real thing and that is the route the refusal names — close the overlay and open the page by name.
+
+The same sentence can also come back from `r` on a row that looked restorable, because another device can trash the landing parent after the list was read.
+It lands on the overlay's own status line and the list re-reads itself.
+
+It opens from the command registry rather than a chord, which is why `/` lists it with a description.
 
 ### Property editor (`g p`)
 
@@ -491,7 +522,20 @@ When you open a `.md` that the outl parser had to recover from (a leading `# hea
 - **Undo bounded**: 200 most recent snapshots.
   Older edits drop off the front.
   Each snapshot remembers selection + cursor so undo lands you where you were.
+- **Undo is per page, and pressing it elsewhere costs nothing**: a snapshot can only be applied to the page it was taken on, so `u` on a different page says `no undo for this page` and leaves the history alone.
+  It used to discard the entry it could not apply, so a few presses after navigating away silently emptied the stack ([#430](https://github.com/outlmd/outl/issues/430)).
+  Go back to the page and the edits are still there.
+- **Toasts show the whole error**: a toast card grows to up to four rows to fit its message, and adds `…` when even that is not enough.
+  They used to be one row inside a 50-column card, so a long `reconcile failed: …` lost the path at the border with nothing to indicate it had been cut ([#435](https://github.com/outlmd/outl/issues/435)).
+- **Editing through the backlinks panel is undoable on the page it changed**: a delete, indent, move or TODO flip applied to a block in the backlinks list writes to *that* page, so the undo entry lives there.
+  Press `u` on the referencing page and nothing happens (`no undo for this page`); open the source page and `u` takes it back.
+  These ops used to leave no undo entry at all ([#431](https://github.com/outlmd/outl/issues/431)).
+- **Search is index-backed**: `/search` filters the in-memory block index a background worker builds, so typing does not re-read the workspace.
+  It used to walk and re-parse every `.md` on each keystroke ([#449](https://github.com/outlmd/outl/issues/449)).
+  On a cold start there is a short window while that index builds; the header shows a spinner during it.
 - **Empty pages keep a bullet**: deleting the last block silently re-adds an empty `- ` so your cursor always has somewhere to go.
+- **A brand-new page tells you where to start**: a page whose only block is empty shows `press i to write · ? for keys` under the bullet, and the line goes away as soon as there is anything on the page or you start typing ([#448](https://github.com/outlmd/outl/issues/448)).
+- **The backlinks section says when it is still indexing**: on a cold start the panel reads `Backlinks · indexing…` instead of rendering nothing, so a page that is still loading is distinguishable from one with no backlinks.
 - **Slugified filenames**: `[[Avelino]]` lives in `pages/avelino.md` with `title:: Avelino` set automatically on first open.
 
 ## Code-block execution
@@ -546,7 +590,7 @@ Some things are explicitly deferred:
 - **`{{query: ...}}`** — inline saved queries; not yet implemented.
 - **Visual mode batch indent / yank / paste** — only delete is wired
   today.
-- **Graph view** — the desktop has it; the TUI may grow one but
+- **Graph view** — no client has one yet; the TUI may grow one but
   not a priority.
 - **P2P sync via iroh** — works today (default transport, single-user
   multi-device over QUIC); the `file` transport (iCloud Drive) is opt-in.

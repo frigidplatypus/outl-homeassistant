@@ -45,6 +45,11 @@ pub(crate) struct AppState {
     /// releases the previous workspace's. Never acquire or drop a lock
     /// from this crate; `outl-core` owns the protocol.
     pub workspace_guards: Arc<Mutex<Option<WorkspaceGuards>>>,
+    /// Which workspace the one automatic-backup thread snapshots.
+    /// `open_workspace_at` is the only writer, after a successful open,
+    /// so a switch retargets the existing thread instead of spawning
+    /// another.
+    pub backup_root: outl_actions::backup::BackupRoot,
     /// Per-device HLC generator. Static for the process lifetime —
     /// actors identify devices, not workspaces.
     pub hlc: HlcGenerator,
@@ -100,6 +105,11 @@ pub(crate) struct AppState {
     /// (the outl async-writes default). See
     /// [`outl_tauri_shared::projection`].
     pub projection_writer: ProjectionWriter,
+
+    /// `[calendar] week_start` from the global config, read once at boot
+    /// beside the timezone. `None` keeps this surface's historical
+    /// Monday. Restart-to-apply, like every other `[calendar]` value.
+    pub calendar_week_start: Option<outl_config::WeekStart>,
 }
 
 /// The desktop's projection onto the shared command surface. The one

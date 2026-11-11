@@ -32,6 +32,11 @@ vi.mock("@outl/shared/plugins/transformer-registry", () => ({
   runTransform: vi.fn(),
   transformerFor: vi.fn(() => null),
 }));
+// `Cmd/Ctrl+Shift+V` reads the clipboard on the backend (the macOS
+// WKWebView prompts for a web-API read outside a paste gesture), so the
+// plugin is the seam for the paste-without-formatting path.
+const clipboard = vi.hoisted(() => ({ readText: vi.fn() }));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => clipboard);
 
 let dispose: (() => void) | undefined;
 
@@ -344,5 +349,247 @@ describe("BlockRow image rendering — #322", () => {
     const tagSpan = Array.from(buttons).find((b) => b.textContent === "#urgent");
     expect(tagSpan).toBeDefined();
     expect(tagSpan?.className).toContain("text-(--color-outl-tag-link-fg)");
+  });
+});
+
+/**
+ * Regression for #488: a paste rewrites the block the user is typing
+ * in, and the draft is seeded once per row (only `startEdit` re-seeds
+ * it). So re-rendering the outline left the textarea on the pre-paste
+ * string, and the next Esc / blur committed *that* back over the paste
+ * — the pasted link vanished from the block and from the `.md`, with
+ * nothing on screen to say so.
+ *
+ * The editor applies the update the paste callback resolves to. These
+ * pin both halves: the textarea shows the pasted text with the caret
+ * after it, and the commit that follows carries the pasted text.
+ */
+function pasteEvent(flavours: Record<string, string>): ClipboardEvent {
+  // jsdom's `ClipboardEvent` ignores `clipboardData` in its init dict.
+  const ev = new Event("paste", {
+    bubbles: true,
+    cancelable: true,
+  }) as ClipboardEvent;
+  Object.defineProperty(ev, "clipboardData", {
+    value: { getData: (type: string) => flavours[type] ?? "" },
+  });
+  return ev;
+}
+
+/** Let the paste handler's awaits settle. */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe("BlockRow paste into the block being edited — #488", () => {
+  const HOST_AFTER = "Some text[See the invoice](https://example.test/i)";
+
+  it("shows the pasted text and commits it, not the stale draft", async () => {
+    const cb = makeCb({
+      onPasteMarkdown: vi
+        .fn()
+        .mockResolvedValue({ text: HOST_AFTER, caret: HOST_AFTER.length }),
+    });
+    const block = makeBlock("blk-paste", "Some text");
+    const ta = mountEditing(block, cb);
+    await flush();
+    ta.setSelectionRange(9, 9);
+
+    const ev = pasteEvent({
+      // A link copied out of an email: HTML only, so `choosePasteRoute`
+      // routes it `rich` and the backend gets `[label](url)`.
+      "text/html": '<a href="https://example.test/i">See the invoice</a>',
+      "text/plain": "See the invoice",
+    });
+    ta.dispatchEvent(ev);
+    await flush();
+
+    expect(ev.defaultPrevented).toBe(true);
+    expect(cb.onPasteMarkdown).toHaveBeenCalled();
+    expect(ta.value).toBe(HOST_AFTER);
+    expect(ta.selectionStart).toBe(HOST_AFTER.length);
+
+    // The part that was silent data loss: Esc used to write "Some text".
+    ta.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await flush();
+    expect(cb.onCommit).toHaveBeenCalledWith("blk-paste", HOST_AFTER);
+  });
+
+  it("leaves the draft alone when the paste did not touch the host block", async () => {
+    // `null` is what a paste that only created siblings resolves to.
+    // Writing the draft anyway would be a round-trip's worth of racing
+    // the user's keystrokes for no change.
+    const cb = makeCb({ onPasteMarkdown: vi.fn().mockResolvedValue(null) });
+    const block = makeBlock("blk-untouched", "Some text");
+    const ta = mountEditing(block, cb);
+    await flush();
+
+    ta.dispatchEvent(
+      pasteEvent({ "text/plain": "- one\n- two", "text/html": "" }),
+    );
+    await flush();
+
+    expect(cb.onPasteMarkdown).toHaveBeenCalled();
+    expect(ta.value).toBe("Some text");
+  });
+
+  it("leaves the caret where the reply put it, not at the end", async () => {
+    // The reply's caret is not always end-of-text: a splice keeps the
+    // user's tail to the right of it. Clamping to the end would drop
+    // them past text they were mid-sentence in.
+    const cb = makeCb({
+      onPasteMarkdown: vi
+        .fn()
+        .mockResolvedValue({ text: "hello BRAVE world", caret: 12 }),
+    });
+    const ta = mountEditing(makeBlock("blk-mid", "hello world"), cb);
+    await flush();
+    ta.setSelectionRange(6, 6);
+
+    ta.dispatchEvent(pasteEvent({ "text/plain": "- a\n- b", "text/html": "" }));
+    await flush();
+
+    expect(ta.value).toBe("hello BRAVE world");
+    expect(ta.selectionStart).toBe(12);
+  });
+
+  it("applies the reply on the paste-without-formatting path too", async () => {
+    // `Cmd/Ctrl+Shift+V` is the only desktop path whose caret is
+    // mid-string by design (`outl_actions::paste_plain` keeps the tail
+    // in the same block), and it had no test at all.
+    clipboard.readText.mockResolvedValue("BRAVE ");
+    const cb = makeCb({
+      onPastePlain: vi
+        .fn()
+        .mockResolvedValue({ text: "hello BRAVE world", caret: 12 }),
+    });
+    const ta = mountEditing(makeBlock("blk-plain", "hello world"), cb);
+    await flush();
+    ta.setSelectionRange(6, 6);
+
+    ta.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "v",
+        metaKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await flush();
+
+    // The host text goes along so the backend splices at a caret
+    // measured against what the textarea is holding.
+    expect(cb.onPastePlain).toHaveBeenCalledWith(
+      "blk-plain",
+      6,
+      "BRAVE ",
+      "hello world",
+    );
+    expect(ta.value).toBe("hello BRAVE world");
+    expect(ta.selectionStart).toBe(12);
+  });
+});
+
+/**
+ * Regression for #477: Tab / Shift-Tab indented or outdented the
+ * edited block but left edit mode, and the selection stayed on
+ * whatever block was selected beforehand, so the next keystroke ran
+ * as a Normal-mode command against the wrong block.
+ *
+ * `onIndent` / `onOutdent` themselves (re-entering edit mode on the
+ * moved block, even on a failed / no-op move) are pinned in
+ * `outline-structure.test.ts`, against the real `<OutlineView />`
+ * wiring extracted into `createStructureOps`; a stub `cb` here, as
+ * used by every other test in this file, can't exercise that half.
+ *
+ * What a stub *can* pin is `<BlockEditor />`'s side of the caret
+ * handoff: the Tab handler has to capture the caret before `commit()`
+ * tears the textarea down, since indenting/outdenting mounts a fresh
+ * `<BlockEditor />` once the block re-enters edit mode, and that
+ * fresh instance has no memory of where the user's caret was.
+ */
+describe("BlockRow Tab / Shift-Tab indent-outdent caret handoff (#477)", () => {
+  it("Tab captures the caret as a caretIntent offset before committing", async () => {
+    const cb = makeCb();
+    const ta = mountEditing(makeBlock("blk-indent", "hello world"), cb);
+    // Let this mount's own pending caret-intent microtask (queued by
+    // `onMount`, caretIntent is `null` at this point) drain first,
+    // otherwise it runs mid-test, after Tab has set a fresh intent,
+    // and swallows it before the assertion below ever sees it.
+    await Promise.resolve();
+    ta.setSelectionRange(5, 5);
+
+    ta.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Tab",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(cb.onIndent).toHaveBeenCalledWith("blk-indent");
+    // This stub `cb.onIndent` never flips `editingBlockId`, so the row
+    // never remounts and nothing has consumed the intent yet; it is
+    // still sitting there, captured, for the real `<OutlineView />`
+    // wiring to hand to the block's next mount.
+    expect(appState.caretIntent).toBe(5);
+  });
+
+  it("Shift+Tab captures the caret and fires onOutdent, not onIndent", async () => {
+    const cb = makeCb();
+    const ta = mountEditing(makeBlock("blk-outdent", "hello world"), cb);
+    await Promise.resolve();
+    ta.setSelectionRange(3, 3);
+
+    ta.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(cb.onOutdent).toHaveBeenCalledWith("blk-outdent");
+    expect(cb.onIndent).not.toHaveBeenCalled();
+    expect(appState.caretIntent).toBe(3);
+  });
+
+  it("a caretIntent offset present on mount lands the caret there, not at the end", async () => {
+    // The other half of the handoff: once the moved block remounts
+    // into edit mode, the fresh `<BlockEditor />` must read the
+    // captured offset back out and clear it, the same contract
+    // `EnterInsertAtEnd`'s `"end"` sentinel already had.
+    setAppState("caretIntent", 5);
+    const ta = mountEditing(makeBlock("blk-remount", "hello world"), makeCb());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(ta.selectionStart).toBe(5);
+    expect(ta.selectionEnd).toBe(5);
+    expect(appState.caretIntent).toBeNull();
+  });
+
+  it("a caretIntent offset of 0 is honoured, not treated as absent", async () => {
+    // `intent &&` would skip a falsy `0` (the caret-at-start case)
+    // and leave whatever position focus() happened to land on.
+    setAppState("caretIntent", 0);
+    const ta = mountEditing(makeBlock("blk-zero", "hello world"), makeCb());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(ta.selectionStart).toBe(0);
+    expect(appState.caretIntent).toBeNull();
   });
 });
